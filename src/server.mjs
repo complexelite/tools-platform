@@ -1,7 +1,9 @@
 import crypto from 'node:crypto';
 import http from 'node:http';
-import {execFile} from 'node:child_process';
+import {execFile,spawn} from 'node:child_process';
 import {promisify} from 'node:util';
+import {mkdir,access} from 'node:fs/promises';
+import path from 'node:path';
 
 const execFileAsync = promisify(execFile);
 const port = Number(process.env.PORT) || 3000;
@@ -14,6 +16,9 @@ const stateName = 'ce_tools_state';
 const nextName = 'ce_tools_next';
 const ttl = 8 * 60 * 60 * 1000;
 const sessions = new Map();
+const previewPort = Number(process.env.HYPERFRAMES_PREVIEW_PORT) || 3002;
+const projectDir = path.join(process.env.HYPERFRAMES_DATA_DIR || '/data/hyperframes', 'default');
+let previewProcess;
 const tools = {
   hyperframes: {name:'HyperFrames', source:'https://github.com/heygen-com/hyperframes', command:'hyperframes', args:['--version'], purpose:'Timeline-based video projects, preview, and render orchestration.'},
   ffmpeg: {name:'FFmpeg', source:'https://github.com/FFmpeg/FFmpeg', command:'ffmpeg', args:['-version'], purpose:'Audio/video encode, decode, mux, demux, and media processing runtime.'},
@@ -37,6 +42,19 @@ async function probe(slug) {
  const t=tools[slug];
  try { const {stdout,stderr}=await execFileAsync(t.command,t.args,{timeout:10000,maxBuffer:65536,env:{...process.env,HOME:'/tmp'}}); return {ok:true,version:(stdout||stderr).split('\n').find(Boolean)?.trim()||'Installed',detail:slug==='ffmpeg'?'FFmpeg source build · network protocols disabled':'HyperFrames npm release 0.8.226 · Node.js '+process.versions.node}; }
  catch(e) { return {ok:false,version:'Unavailable',detail:e.code==='ENOENT'?'The executable was not found in this runtime.':'The fixed version probe failed.'}; }
+}
+async function startPreview() {
+ await mkdir(projectDir,{recursive:true});
+ try { await access(path.join(projectDir,'index.html')); }
+ catch { await execFileAsync('hyperframes',['init',projectDir,'--example','blank','--skip-skills','--non-interactive'],{timeout:120000,maxBuffer:1024*1024,env:{...process.env,HYPERFRAMES_SKIP_SKILLS:'1'}}); }
+ previewProcess=spawn('hyperframes',['preview','--port',String(previewPort),'--foreground',projectDir],{stdio:'ignore',env:{...process.env,NO_OPEN:'1',CI:'1'}});
+ previewProcess.on('exit',()=>{previewProcess=undefined;});
+ for(let i=0;i<60;i++) { if(previewProcess.exitCode!==null) throw new Error('HyperFrames preview exited during startup'); try { const response=await fetch(`http://127.0.0.1:${previewPort}/`,{signal:AbortSignal.timeout(1000)}); if(response.ok)return; } catch {} await new Promise(resolve=>setTimeout(resolve,1000)); }
+ throw new Error('HyperFrames preview did not become ready');
+}
+function proxyPreview(req,res,upstreamPath=req.url||'/') {
+ const upstream=http.request({hostname:'127.0.0.1',port:previewPort,path:upstreamPath,method:req.method,headers:{...req.headers,host:`127.0.0.1:${previewPort}`}},response=>{res.writeHead(response.statusCode||502,response.statusMessage,response.headers);response.pipe(res);});
+ upstream.on('error',()=>{if(!res.headersSent)send(res,502,'HyperFrames Studio is starting or unavailable. Retry shortly.');else res.destroy();}); req.pipe(upstream);
 }
 function authenticatedApi(req) {
  if(!apiSecret) return false;
@@ -68,9 +86,19 @@ async function handle(req,res) {
  const api=path.match(/^\/api\/v1\/runtime\/(hyperframes|ffmpeg)$/);
  if(api&&req.method==='GET') {if(!authenticatedApi(req))return send(res,401,JSON.stringify({ok:false,error:'Unauthorized'}),'application/json');return send(res,200,JSON.stringify(await probe(api[1])),'application/json');}
  const slug=pages.get(path);
- if(slug) {const s=session(req); if(!s)return send(res,302,'','text/plain; charset=utf-8',{Location:`/auth/login?next=${encodeURIComponent(path)}`}); return send(res,200,page(slug,s.user,await probe(slug)),'text/html; charset=utf-8',{'Content-Security-Policy':"default-src 'self'; style-src 'self'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'"});}
+ if(slug==='hyperframes') {if(!session(req))return send(res,302,'','text/plain; charset=utf-8',{Location:`/auth/login?next=${encodeURIComponent(path)}`});return proxyPreview(req,res,'/');}
+ if(slug==='ffmpeg') {const s=session(req);if(!s)return send(res,302,'','text/plain; charset=utf-8',{Location:`/auth/login?next=${encodeURIComponent(path)}`});return send(res,200,page(slug,s.user,await probe(slug)),'text/html; charset=utf-8',{'Content-Security-Policy':"default-src 'self'; style-src 'self'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'"});}
  if(path==='/assets/tools.css') {const fs=await import('node:fs/promises');return send(res,200,await fs.readFile(new URL('../public/tools.css',import.meta.url)),'text/css; charset=utf-8');}
+ if(!path.startsWith('/auth/')) {if(!session(req))return send(res,302,'','text/plain; charset=utf-8',{Location:`/auth/login?next=${encodeURIComponent('/hyperframes')}`});return proxyPreview(req,res);}
  return send(res,404,'Not found.');
 }
 setInterval(()=>{const now=Date.now();for(const [key,s] of sessions)if(s.expires<=now)sessions.delete(key)},60000).unref();
-http.createServer((req,res)=>{void handle(req,res).catch(()=>send(res,500,'Request could not be completed.'))}).listen(port,'0.0.0.0');
+const server=http.createServer((req,res)=>{void handle(req,res).catch(()=>send(res,500,'Request could not be completed.'))});
+server.on('upgrade',(req,socket,head)=>{
+ if(!session(req)){socket.end('HTTP/1.1 401 Unauthorized\r\nConnection: close\r\n\r\n');return;}
+ const upstream=http.request({hostname:'127.0.0.1',port:previewPort,path:req.url,method:req.method,headers:{...req.headers,host:`127.0.0.1:${previewPort}`}});
+ upstream.on('upgrade',(response,upstreamSocket,upstreamHead)=>{socket.write(`HTTP/1.1 ${response.statusCode||101} ${response.statusMessage||'Switching Protocols'}\r\n${Object.entries(response.headers).map(([key,value])=>`${key}: ${value}`).join('\r\n')}\r\n\r\n`);if(upstreamHead.length)socket.write(upstreamHead);if(head.length)upstreamSocket.write(head);socket.pipe(upstreamSocket).pipe(socket);});
+ upstream.on('response',response=>socket.end(`HTTP/1.1 ${response.statusCode||502} ${response.statusMessage||'Bad Gateway'}\r\nConnection: close\r\n\r\n`)); upstream.on('error',()=>socket.destroy()); upstream.end();
+});
+await startPreview();
+server.listen(port,'0.0.0.0');
