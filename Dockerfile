@@ -11,7 +11,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates
 COPY --from=ffmpeg-build /opt/ffmpeg /opt/ffmpeg
 WORKDIR /app
 COPY package.json ./
-RUN npm install --omit=dev --ignore-scripts && npm cache clean --force
+RUN npm ci --omit=dev --ignore-scripts && npm cache clean --force
 COPY src ./src
 COPY public ./public
 USER node
