@@ -6,11 +6,11 @@ WORKDIR /src
 RUN git init ffmpeg && cd ffmpeg && git remote add origin https://github.com/FFmpeg/FFmpeg.git && git fetch --depth 1 origin "$FFMPEG_COMMIT" && git checkout --detach FETCH_HEAD && ./configure --prefix=/opt/ffmpeg --disable-doc --disable-debug --disable-network --disable-shared --enable-static --disable-ffplay && make -j2 && make install
 
 FROM node:22-bookworm-slim
-ENV NODE_ENV=production PORT=3000 PATH="/opt/ffmpeg/bin:${PATH}" CHROME_BIN=/usr/bin/chromium
+ENV NODE_ENV=production PORT=3000 PATH="/app/node_modules/.bin:/opt/ffmpeg/bin:${PATH}" CHROME_BIN=/usr/bin/chromium
 RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates chromium fonts-liberation && rm -rf /var/lib/apt/lists/*
 COPY --from=ffmpeg-build /opt/ffmpeg /opt/ffmpeg
 WORKDIR /app
-COPY package.json ./
+COPY package.json package-lock.json ./
 RUN npm ci --omit=dev --ignore-scripts && npm cache clean --force
 COPY src ./src
 COPY public ./public

@@ -54,7 +54,7 @@ async function handle(req,res) {
  }
  if(path==='/auth/perfex'&&req.method==='GET') {
    const code=url.searchParams.get('code')||'', state=url.searchParams.get('state')||'', saved=cookies(req)[stateName]||'';
-   if(!secret||!/^[a-f0-9]{64}$/i.test(code)||!/^[a-f0-9]{64}$/i.test(state)||!crypto.timingSafeEqual(Buffer.from(state.toLowerCase()),Buffer.from(saved.toLowerCase()))) return send(res,400,'Invalid or expired Perfex sign-in handoff.');
+   if(!secret||!/^[a-f0-9]{64}$/i.test(code)||!/^[a-f0-9]{64}$/i.test(state)||!/^[a-f0-9]{64}$/i.test(saved)||!crypto.timingSafeEqual(Buffer.from(state.toLowerCase()),Buffer.from(saved.toLowerCase()))) return send(res,400,'Invalid or expired Perfex sign-in handoff.');
    const timestamp=String(Math.floor(Date.now()/1000)), signature=crypto.createHmac('sha256',secret).update(`${timestamp}\n${code}`).digest('hex');
    try {
     const response=await fetch(exchangeUrl,{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded','X-Studio-Timestamp':timestamp,'X-Studio-Signature':signature},body:new URLSearchParams({code,app:'tools'}),signal:AbortSignal.timeout(10000),redirect:'error'});
