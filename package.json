@@ -1,0 +1,9 @@
+{
+  "name": "complex-elite-tools-platform",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "engines": {"node": ">=22"},
+  "scripts": {"start": "node src/server.mjs"},
+  "dependencies": {"hyperframes": "0.8.226"}
+}
