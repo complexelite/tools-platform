@@ -97,7 +97,13 @@ async function startPreview() {
  for(let i=0;i<60;i++) { if(previewProcess.exitCode!==null) throw new Error('HyperFrames preview exited during startup'); try { const response=await fetch(`http://127.0.0.1:${previewPort}/`,{signal:AbortSignal.timeout(1000)}); if(response.ok)return; } catch {} await new Promise(resolve=>setTimeout(resolve,1000)); }
  throw new Error('HyperFrames preview did not become ready');
 }
-function proxyPreview(req,res,upstreamPath=req.url||'/') {
+function previewPath(requestPath,stripEditorPrefix=false) {
+ if(!stripEditorPrefix)return requestPath;
+ const editorPrefix='/hyperframes/editor';
+ return requestPath===editorPrefix||requestPath.startsWith(`${editorPrefix}/`) ? requestPath.slice(editorPrefix.length)||'/' : requestPath;
+}
+function proxyPreview(req,res,upstreamPath=req.url||'/',stripEditorPrefix=false) {
+ upstreamPath=previewPath(upstreamPath,stripEditorPrefix);
  const upstream=http.request({hostname:'127.0.0.1',port:previewPort,path:upstreamPath,method:req.method,headers:{...req.headers,host:`127.0.0.1:${previewPort}`}},response=>{res.writeHead(response.statusCode||502,response.statusMessage,response.headers);response.pipe(res);});
  upstream.on('error',()=>{if(!res.headersSent)send(res,502,'HyperFrames Studio is starting or unavailable. Retry shortly.');else res.destroy();}); req.pipe(upstream);
 }
@@ -137,14 +143,14 @@ async function handle(req,res) {
  if(slug==='ffmpeg') {const s=session(req);if(!s)return send(res,302,'','text/plain; charset=utf-8',{Location:`/auth/login?next=${encodeURIComponent(path)}`});return send(res,200,ffmpegPage(s.user,await probe(slug)),'text/html; charset=utf-8',{'Content-Security-Policy':"default-src 'self'; style-src 'self'; script-src 'self'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'"});}
  if(path==='/assets/tools.css') {const fs=await import('node:fs/promises');return send(res,200,await fs.readFile(new URL('../public/tools.css',import.meta.url)),'text/css; charset=utf-8');}
  if(path==='/assets/ffmpeg.js') {const fs=await import('node:fs/promises');return send(res,200,await fs.readFile(new URL('../public/ffmpeg.js',import.meta.url)),'text/javascript; charset=utf-8');}
- if(!path.startsWith('/auth/')) {if(!session(req))return send(res,302,'','text/plain; charset=utf-8',{Location:`/auth/login?next=${encodeURIComponent('/hyperframes')}`});return proxyPreview(req,res);}
+ if(!path.startsWith('/auth/')) {if(!session(req))return send(res,302,'','text/plain; charset=utf-8',{Location:`/auth/login?next=${encodeURIComponent('/hyperframes')}`});return proxyPreview(req,res,req.url||'/',true);}
  return send(res,404,'Not found.');
 }
 setInterval(()=>{const now=Date.now();for(const [key,s] of sessions)if(s.expires<=now)sessions.delete(key)},60000).unref();
 const server=http.createServer((req,res)=>{void handle(req,res).catch(()=>send(res,500,'Request could not be completed.'))});
 server.on('upgrade',(req,socket,head)=>{
  if(!session(req)){socket.end('HTTP/1.1 401 Unauthorized\r\nConnection: close\r\n\r\n');return;}
- const upstream=http.request({hostname:'127.0.0.1',port:previewPort,path:req.url,method:req.method,headers:{...req.headers,host:`127.0.0.1:${previewPort}`}});
+ const upstream=http.request({hostname:'127.0.0.1',port:previewPort,path:previewPath(req.url||'/',true),method:req.method,headers:{...req.headers,host:`127.0.0.1:${previewPort}`}});
  upstream.on('upgrade',(response,upstreamSocket,upstreamHead)=>{socket.write(`HTTP/1.1 ${response.statusCode||101} ${response.statusMessage||'Switching Protocols'}\r\n${Object.entries(response.headers).map(([key,value])=>`${key}: ${value}`).join('\r\n')}\r\n\r\n`);if(upstreamHead.length)socket.write(upstreamHead);if(head.length)upstreamSocket.write(head);socket.pipe(upstreamSocket).pipe(socket);});
  upstream.on('response',response=>socket.end(`HTTP/1.1 ${response.statusCode||502} ${response.statusMessage||'Bad Gateway'}\r\nConnection: close\r\n\r\n`)); upstream.on('error',()=>socket.destroy()); upstream.end();
 });
