@@ -1,6 +1,6 @@
 # Complex Elite Tools Platform
 
-Private Perfex-staff tools at `tools.complexelite.com/hyperframes`, `/ffmpeg`, and `/google-maps-scraper`.
+Private Perfex-staff tools at `tools.complexelite.com/hyperframes`, `/ffmpeg`, `/google-maps-scraper`, `/openreply`, `/scrapling`, and `/ai-video-captions`.
 
 The hostname root is a small installed-tools landing page. Each application path is explicit; unknown paths return 404 instead of falling through to another tool.
 
@@ -9,6 +9,9 @@ The hostname root is a small installed-tools landing page. Each application path
 - `/hyperframes` runs the upstream browser editor (`hyperframes preview`) against a persistent blank composition at `/data/hyperframes/default`. The editor is protected by Perfex staff SSO, including its API, assets, and websocket traffic.
 - `/ffmpeg` is a private browser converter for MP4 (MPEG-4/AAC), M4A, FLAC, and WAV, backed by the installed FFmpeg runtime.
 - `/google-maps-scraper` proxies the already-running `complexelite/google-maps-scraper` service from the private Dokploy network, including its root-level static and API paths. The gateway requires a valid Perfex staff session before it proxies either the app or its API. Its running image corresponds to commit `903b96d7aa8863188022c04db220e44f3218c860` in `complexelite/google-maps-scraper`; updates to that source repo do not automatically rebuild the existing service yet.
+- `/openreply` is a Perfex-gated entry to the existing OpenReply service. OpenReply currently keeps its Leads base path, magic-link login, provider callbacks, database, and worker. `/tools/openreply/` on this hostname is the service's configured path. Do not remove the Leads-side routes or database until its callback and login configuration has been migrated.
+- `/scrapling` is a Perfex-gated connection guide for the existing Scrapling MCP service. `/scrapling/mcp` forwards to the service's `/mcp` endpoint; the service still validates its own bearer token. Scrapling is an MCP/API service, not a browser UI.
+- `/ai-video-captions` proxies the Git-backed Compose deployment from `complexelite/ai-video-captions`. The frontend is attached to the private Dokploy network and the processing backend has no public port.
 - No database is needed. HyperFrames project files live on the Dokploy persistent volume mounted at `/data`.
 - The browser pages use Perfex's one-time staff SSO handoff. Set `PERFEX_SSO_EXCHANGE_URL` and `STUDIO_SSO_SECRET` in Dokploy; the secret must match the Perfex/Studio integration.
 - The conversion form accepts media uploads up to 500 MB, allows one conversion at a time, caps each output at 1 GB and 10 minutes, and deletes temporary files after download or failure. Conversion uses fixed argument lists and does not accept remote URLs or shell input.
