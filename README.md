@@ -2,6 +2,8 @@
 
 Private Perfex-staff tools at `tools.complexelite.com/hyperframes` and `/ffmpeg`.
 
+The hostname root is a small installed-tools landing page. Only `/hyperframes` and its editor/assets route to HyperFrames; unknown paths return 404 instead of falling through to the HyperFrames preview. New tools need an explicit runtime route before their path becomes available.
+
 - HyperFrames is pinned to the official `0.8.226` CLI release, sourced from the [upstream project](https://github.com/heygen-com/hyperframes).
 - FFmpeg is compiled from [upstream FFmpeg](https://github.com/FFmpeg/FFmpeg) at commit `aab6cec3e8415154b3f0570f8d131db07a9901de`. The build disables network protocols and provides a static CLI binary.
 - `/hyperframes` runs the upstream browser editor (`hyperframes preview`) against a persistent blank composition at `/data/hyperframes/default`. The editor is protected by Perfex staff SSO, including its API, assets, and websocket traffic.
