@@ -134,7 +134,7 @@ function proxyOpenReply(req,res,upstreamPath) {
  upstream.on('error',()=>{if(!res.headersSent)send(res,502,'OpenReply is starting or unavailable. Retry shortly.');else res.destroy();});req.pipe(upstream);
 }
 function proxyScrapling(req,res,upstreamPath) {
- const upstream=http.request({hostname:'tools-scrapling',port:8000,path:upstreamPath,method:req.method,headers:{...req.headers,host:'tools-scrapling:8000','x-forwarded-host':req.headers.host||'tools.complexelite.com','x-forwarded-proto':'https'}},response=>{res.writeHead(response.statusCode||502,response.statusMessage,response.headers);response.pipe(res);});
+ const upstream=http.request({hostname:'tools-scrapling',port:8000,path:upstreamPath,method:req.method,headers:{...req.headers,host:req.headers.host||'tools.complexelite.com','x-forwarded-host':req.headers.host||'tools.complexelite.com','x-forwarded-proto':'https'}},response=>{res.writeHead(response.statusCode||502,response.statusMessage,response.headers);response.pipe(res);});
  upstream.on('error',()=>{if(!res.headersSent)send(res,502,'Scrapling is starting or unavailable. Retry shortly.');else res.destroy();});req.pipe(upstream);
 }
 function proxyAiCaptions(req,res,upstreamPath) {
