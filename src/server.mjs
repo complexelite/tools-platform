@@ -18,6 +18,7 @@ const apiSecret = process.env.TOOLS_API_SECRET || '';
 const cookieName = 'ce_tools_session';
 const stateName = 'ce_tools_state';
 const nextName = 'ce_tools_next';
+const popupName = 'ce_tools_popup';
 const ttl = 8 * 60 * 60 * 1000;
 const sessions = new Map();
 const previewPort = Number(process.env.HYPERFRAMES_PREVIEW_PORT) || 3002;
@@ -56,8 +57,14 @@ function page(slug,user,status) {
  const t=tools[slug]; const peer=slug==='hyperframes'?'ffmpeg':'hyperframes';
  return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="color-scheme" content="dark"><title>${t.name} · Complex Elite Tools</title><link rel="stylesheet" href="/assets/tools.css"></head><body><main><header><a href="/">Complex Elite Tools</a><form method="post" action="/auth/logout"><button>Sign out · ${esc(user.name)}</button></form></header><p class="eyebrow">PRIVATE TOOL RUNTIME</p><h1>${t.name}</h1><p class="lead">${t.purpose}</p><nav><a ${slug==='hyperframes'?'aria-current="page"':''} href="/hyperframes">HyperFrames</a><a ${slug==='ffmpeg'?'aria-current="page"':''} href="/ffmpeg">FFmpeg</a></nav><section><div class="state"><span class="dot ${status.ok?'good':'bad'}"></span><b>${status.ok?'Installed and responding':'Runtime check failed'}</b></div><dl><dt>Version</dt><dd>${esc(status.version)}</dd><dt>Build</dt><dd>${esc(status.detail)}</dd><dt>Upstream</dt><dd><a href="${t.source}" target="_blank" rel="noreferrer">${t.source}</a></dd><dt>Integration</dt><dd>Private status page · fixed health probe only</dd></dl><form method="get" action="/${slug}"><button class="primary">Refresh runtime check</button></form></section><aside>Staff sign-in is verified by clients.complexelite.com. This page does not provide shell access or accept arbitrary commands.</aside><footer>Complex Elite · Tools platform</footer></main></body></html>`;
 }
-function signInPage() {
- return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="color-scheme" content="dark"><title>Sign in · Complex Elite Tools</title><link rel="stylesheet" href="/assets/tools.css"></head><body class="signin-page"><main class="signin-shell"><header class="signin-header"><a href="/" class="brand"><span class="brand-mark" aria-hidden="true">CE</span><span>COMPLEX ELITE <small>MEDIA GROUP</small></span></a><span class="secure-label"><span aria-hidden="true">●</span> STAFF ACCESS</span></header><section class="signin-card"><div class="signin-copy"><p class="eyebrow">YOUR WORKSPACE, CONNECTED</p><h1>Tools that move<br><span>your work forward.</span></h1><p class="lead">Sign in once to open the private tools available to your Complex Elite account.</p><a class="signin-button" href="/auth/login?next=%2F"><span>Continue with Complex Elite</span><span aria-hidden="true">→</span></a><p class="signin-note"><span class="lock-icon" aria-hidden="true">◈</span> Secure staff sign-in powered by Perfex. Your password is never entered or stored here.</p></div><div class="signin-visual" aria-hidden="true"><div class="orbit orbit-one"></div><div class="orbit orbit-two"></div><div class="orbit orbit-three"></div><div class="visual-core"><span>CE</span><small>TOOLS</small></div><div class="visual-chip chip-one">VIDEO</div><div class="visual-chip chip-two">AUTOMATION</div><div class="visual-chip chip-three">MEDIA</div></div></section><footer class="signin-footer"><span>Complex Elite Media Group</span><span>Private staff workspace · Staff accounts are managed in Perfex</span></footer></main></body></html>`;
+function signInPage(next='/') {
+ const safeNext=pages.has(next)?next:'/';
+ const href=`/auth/login?next=${encodeURIComponent(safeNext)}`;
+ return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"><meta name="color-scheme" content="dark"><title>Sign in · Complex Elite Tools</title><link rel="stylesheet" href="/assets/tools.css"><script src="/assets/signin.js" defer></script></head><body class="signin-page"><main class="signin-shell"><header class="signin-header"><a href="/" class="brand"><span class="brand-mark" aria-hidden="true">CE</span><span>COMPLEX ELITE <small>MEDIA GROUP</small></span></a><span class="secure-label"><span aria-hidden="true">●</span> STAFF ACCESS</span></header><section class="signin-card"><div class="signin-copy"><p class="eyebrow">YOUR WORKSPACE, CONNECTED</p><h1>Tools that move<br><span>your work forward.</span></h1><p class="lead">Sign in once to open the private tools available to your Complex Elite account.</p><a class="signin-button" href="${esc(href)}" id="perfex-signin"><span>Continue with Complex Elite</span><span aria-hidden="true">→</span></a><p class="signin-note" id="signin-status" role="status" aria-live="polite"><span class="lock-icon" aria-hidden="true">◈</span> Secure staff sign-in powered by Perfex. Your password is never entered or stored here.</p></div><div class="signin-visual" aria-hidden="true"><div class="orbit orbit-one"></div><div class="orbit orbit-two"></div><div class="orbit orbit-three"></div><div class="visual-core"><span>CE</span><small>TOOLS</small></div><div class="visual-chip chip-one">VIDEO</div><div class="visual-chip chip-two">AUTOMATION</div><div class="visual-chip chip-three">MEDIA</div></div></section><footer class="signin-footer"><span>Complex Elite Media Group</span><span>Private staff workspace · Staff accounts are managed in Perfex</span></footer></main></body></html>`;
+}
+function popupCompletePage(next='/') {
+ const safeNext=pages.has(next)?next:'/';
+ return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"><meta name="color-scheme" content="dark"><title>Signed in · Complex Elite Tools</title><link rel="stylesheet" href="/assets/tools.css"><script src="/assets/auth-callback.js" defer></script></head><body class="signin-page"><main class="callback-shell"><span class="brand-mark" aria-hidden="true">CE</span><p class="eyebrow">SECURE STAFF ACCESS</p><h1>Sign-in complete</h1><p class="lead" id="callback-status" role="status" aria-live="polite">Returning to your Tools page…</p><a class="signin-button" href="${esc(safeNext)}" id="return-to-tools">Return to Complex Elite Tools <span aria-hidden="true">→</span></a><p class="signin-note">If this window stays open, use the button above to continue.</p></main></body></html>`;
 }
 function catalogPage(user) {
  return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="color-scheme" content="dark"><title>Complex Elite Tools</title><link rel="stylesheet" href="/assets/tools.css"></head><body><main><header><a href="/">Complex Elite Media Group</a><form method="post" action="/auth/logout"><button>Sign out · ${esc(user.name)}</button></form></header><p class="eyebrow">PRIVATE TOOL RUNTIME</p><h1>Tools</h1><p class="lead">Open an installed tool. Each tool has its own address and stays behind your Perfex staff sign-in.</p><section class="tool-list"><article><h2>HyperFrames</h2><p class="muted">Create, preview, and render timeline-based video projects.</p><a class="tool-link" href="/hyperframes">Open HyperFrames →</a><p class="muted"><small>tools.complexelite.com/hyperframes</small></p></article><article><h2>FFmpeg</h2><p class="muted">Convert video and audio files using fixed, reviewed presets.</p><a class="tool-link" href="/ffmpeg">Open FFmpeg →</a><p class="muted"><small>tools.complexelite.com/ffmpeg</small></p></article><article><h2>Google Maps Scraper</h2><p class="muted">Search and export Google Maps business results from the Tools-hosted service. Protected by Perfex sign-in.</p><a class="tool-link" href="/google-maps-scraper">Open Google Maps Scraper →</a><p class="muted"><small><a href="https://github.com/complexelite/google-maps-scraper">GitHub source</a></small></p></article><article><h2>OpenReply</h2><p class="muted">Instagram comment-to-DM campaigns and inbox. Migrated to the Tools-hosted stack with its existing account data and provider configuration.</p><a class="tool-link" href="/openreply">Open OpenReply →</a><p class="muted"><small><a href="https://github.com/complexelite/openreply">GitHub source</a> · the app keeps its existing magic-link sign-in and provider callbacks.</small></p></article><article><h2>Scrapling</h2><p class="muted">Scraping library and MCP service for connected agents. MCP requests still require Scrapling’s bearer token.</p><a class="tool-link" href="/scrapling">View Scrapling connection →</a><p class="muted"><small><a href="https://github.com/complexelite/Scrapling">GitHub source</a></small></p></article><article><h2>AI Video Captions</h2><p class="muted">Generate animated subtitles with Whisper and FFmpeg. Uploads and results stay on the VPS with a 24-hour cleanup policy.</p><a class="tool-link" href="/ai-video-captions">Open AI Video Captions →</a><p class="muted"><small><a href="https://github.com/complexelite/ai-video-captions">GitHub source</a></small></p></article></section><aside>Only installed routes are opened here. Unknown paths return 404.</aside><footer>Complex Elite · Tools platform</footer></main></body></html>`;
@@ -186,11 +193,12 @@ function authenticatedApi(req) {
 async function handle(req,res) {
  const url=new URL(req.url||'/', 'http://tools.internal'), path=url.pathname;
  if(path==='/healthz'&&req.method==='GET') return send(res,200,'ok');
- if(path==='/login'&&req.method==='GET') {if(session(req))return send(res,303,'','text/plain; charset=utf-8',{Location:'/'});return send(res,200,signInPage(),'text/html; charset=utf-8',{'Content-Security-Policy':"default-src 'self'; style-src 'self'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'"});}
+ if(path==='/login'&&req.method==='GET') {const requested=url.searchParams.get('next')||'/',next=pages.has(requested)?requested:'/';if(session(req))return send(res,303,'','text/plain; charset=utf-8',{Location:next});return send(res,200,signInPage(next),'text/html; charset=utf-8',{'Content-Security-Policy':"default-src 'self'; style-src 'self'; script-src 'self'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'"});}
  if(path==='/auth/login'&&req.method==='GET') {
    const requested=url.searchParams.get('next')||'/', next=pages.has(requested)?requested:'/';
    const state=crypto.randomBytes(32).toString('hex'), target=new URL(loginUrl); target.searchParams.set('state',state);
-   return send(res,303,'','text/plain; charset=utf-8',{Location:target.toString(),'Set-Cookie':[cookie(stateName,state,300),cookie(nextName,encodeURIComponent(next),300)]});
+   const popup=url.searchParams.get('popup')==='1';
+   return send(res,303,'','text/plain; charset=utf-8',{Location:target.toString(),'Set-Cookie':[cookie(stateName,state,300),cookie(nextName,encodeURIComponent(next),300),cookie(popupName,popup?'1':'',popup?300:0)]});
  }
  if(path==='/auth/perfex'&&req.method==='GET') {
    const code=url.searchParams.get('code')||'', state=url.searchParams.get('state')||'', saved=cookies(req)[stateName]||'';
@@ -200,7 +208,11 @@ async function handle(req,res) {
     const response=await fetch(exchangeUrl,{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded','X-Studio-Timestamp':timestamp,'X-Studio-Signature':signature},body:new URLSearchParams({code,app:'tools'}),signal:AbortSignal.timeout(10000),redirect:'error'});
     const result=await response.json(); if(!response.ok||result.ok!==true||!result.user||!Number.isInteger(Number(result.user.id))) return send(res,401,'Perfex sign-in expired or could not be verified.');
     const token=crypto.randomBytes(32).toString('base64url'); sessions.set(token,{user:{id:Number(result.user.id),name:String(result.user.name||'Perfex user'),email:String(result.user.email||''),role:String(result.user.role||'staff')},expires:Date.now()+ttl});
-    const next=decodeURIComponent(cookies(req)[nextName]||'/'); return send(res,303,'','text/plain; charset=utf-8',{Location:pages.has(next)?next:'/','Set-Cookie':[cookie(cookieName,token,ttl/1000),cookie(stateName,'',0),cookie(nextName,'',0)]});
+    let next='/';try{next=decodeURIComponent(cookies(req)[nextName]||'/');}catch{}
+    const popup=cookies(req)[popupName]==='1';
+    const headers={'Set-Cookie':[cookie(cookieName,token,ttl/1000),cookie(stateName,'',0),cookie(nextName,'',0),cookie(popupName,'',0)]};
+    if(popup)return send(res,200,popupCompletePage(next),'text/html; charset=utf-8',{...headers,'Content-Security-Policy':"default-src 'self'; style-src 'self'; script-src 'self'; frame-ancestors 'none'; base-uri 'none'"});
+    return send(res,303,'','text/plain; charset=utf-8',{...headers,Location:pages.has(next)?next:'/'});
    } catch {return send(res,502,'Perfex sign-in could not be reached. Retry shortly.');}
  }
  if(path==='/auth/logout'&&req.method==='POST') {const fetchSite=String(req.headers['sec-fetch-site']||'').toLowerCase();if(fetchSite&&fetchSite!=='same-origin')return send(res,403,'Request refused.');const s=session(req);if(s)sessions.delete(s.token);return send(res,303,'','text/plain; charset=utf-8',{Location:'/','Set-Cookie':cookie(cookieName,'',0)});}
@@ -209,7 +221,7 @@ async function handle(req,res) {
  if(api&&req.method==='GET') {if(!authenticatedApi(req))return send(res,401,JSON.stringify({ok:false,error:'Unauthorized'}),'application/json');return send(res,200,JSON.stringify(await probe(api[1])),'application/json');}
  if(path==='/api/ffmpeg/convert'&&req.method==='POST') {if(!session(req))return send(res,401,JSON.stringify({error:'Perfex sign-in is required.'}),'application/json');const origin=req.headers.origin;if(origin&&new URL(origin).host!==(req.headers.host||'')){req.resume();return send(res,403,JSON.stringify({error:'Cross-origin conversion requests are refused.'}),'application/json');}return convertMedia(req,res,url);}
  if(path==='/ai-video-captions'||path.startsWith('/ai-video-captions/')) {
-   if(!session(req)) {req.resume();return send(res,302,'','text/plain; charset=utf-8',{Location:`/auth/login?next=${encodeURIComponent('/ai-video-captions')}`});}
+   if(!session(req)) {req.resume();return send(res,302,'','text/plain; charset=utf-8',{Location:`/login?next=${encodeURIComponent('/ai-video-captions')}`});}
    return proxyAiCaptions(req,res,req.url||'/');
  }
  if(path==='/tools/openreply'||path.startsWith('/tools/openreply/')) {
@@ -217,13 +229,13 @@ async function handle(req,res) {
    return send(res,308,'','text/plain; charset=utf-8',{Location:publicPath});
  }
  if(path==='/openreply'||path.startsWith('/openreply/')) {
-   if(!session(req)) {req.resume();return send(res,302,'','text/plain; charset=utf-8',{Location:`/auth/login?next=${encodeURIComponent('/openreply')}`});}
+   if(!session(req)) {req.resume();return send(res,302,'','text/plain; charset=utf-8',{Location:`/login?next=${encodeURIComponent('/openreply')}`});}
    const suffix=path.slice(openReplyPublicPrefix.length)||'';
    const upstreamPath=`${openReplyInternalPrefix}${suffix}${url.search}`;
    return proxyOpenReply(req,res,upstreamPath);
  }
  if(path==='/scrapling'||path==='/scrapling/') {
-   const s=session(req);if(!s)return send(res,302,'','text/plain; charset=utf-8',{Location:`/auth/login?next=${encodeURIComponent('/scrapling')}`});
+   const s=session(req);if(!s)return send(res,302,'','text/plain; charset=utf-8',{Location:`/login?next=${encodeURIComponent('/scrapling')}`});
    return send(res,200,scraplingPage(s.user),'text/html; charset=utf-8',{'Content-Security-Policy':"default-src 'self'; style-src 'self'; script-src 'self'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'"});
  }
  if(path==='/scrapling/mcp') {
@@ -236,19 +248,21 @@ async function handle(req,res) {
  const mapsRootAsset=mapsRootPaths.some(prefix=>path===prefix||path.startsWith(prefix))&&!path.startsWith('/api/v1/runtime/');
  if(mapsAppPath||mapsRootAsset) {
    if(!session(req)) {
-     if(mapsPage)return send(res,302,'','text/plain; charset=utf-8',{Location:`/auth/login?next=${encodeURIComponent('/google-maps-scraper')}`});
+     if(mapsPage)return send(res,302,'','text/plain; charset=utf-8',{Location:`/login?next=${encodeURIComponent('/google-maps-scraper')}`});
      req.resume();return send(res,401,'Perfex staff sign-in is required.','text/plain; charset=utf-8');
    }
    const upstreamPath=mapsAppPath?`${path.slice('/google-maps-scraper'.length)||'/'}${url.search}`:req.url||'/';
    return proxyGoogleMaps(req,res,upstreamPath);
  }
  const slug=pages.get(path);
- if(slug==='hyperframes') {if(!session(req))return send(res,302,'','text/plain; charset=utf-8',{Location:`/auth/login?next=${encodeURIComponent(path)}`});return send(res,302,'','text/plain; charset=utf-8',{Location:'/hyperframes/editor/#project/default'});}
- if(path==='/hyperframes/editor'||path==='/hyperframes/editor/') {if(!session(req))return send(res,302,'','text/plain; charset=utf-8',{Location:`/auth/login?next=${encodeURIComponent('/hyperframes')}`});return proxyPreview(req,res,'/'+url.search);}
- if(slug==='ffmpeg') {const s=session(req);if(!s)return send(res,302,'','text/plain; charset=utf-8',{Location:`/auth/login?next=${encodeURIComponent(path)}`});return send(res,200,ffmpegPage(s.user,await probe(slug)),'text/html; charset=utf-8',{'Content-Security-Policy':"default-src 'self'; style-src 'self'; script-src 'self'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'"});}
+ if(slug==='hyperframes') {if(!session(req))return send(res,302,'','text/plain; charset=utf-8',{Location:`/login?next=${encodeURIComponent(path)}`});return send(res,302,'','text/plain; charset=utf-8',{Location:'/hyperframes/editor/#project/default'});}
+ if(path==='/hyperframes/editor'||path==='/hyperframes/editor/') {if(!session(req))return send(res,302,'','text/plain; charset=utf-8',{Location:`/login?next=${encodeURIComponent('/hyperframes')}`});return proxyPreview(req,res,'/'+url.search);}
+ if(slug==='ffmpeg') {const s=session(req);if(!s)return send(res,302,'','text/plain; charset=utf-8',{Location:`/login?next=${encodeURIComponent(path)}`});return send(res,200,ffmpegPage(s.user,await probe(slug)),'text/html; charset=utf-8',{'Content-Security-Policy':"default-src 'self'; style-src 'self'; script-src 'self'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'"});}
  if(path==='/assets/tools.css') {const fs=await import('node:fs/promises');return send(res,200,await fs.readFile(new URL('../public/tools.css',import.meta.url)),'text/css; charset=utf-8');}
+ if(path==='/assets/signin.js') {const fs=await import('node:fs/promises');return send(res,200,await fs.readFile(new URL('../public/signin.js',import.meta.url)),'text/javascript; charset=utf-8');}
+ if(path==='/assets/auth-callback.js') {const fs=await import('node:fs/promises');return send(res,200,await fs.readFile(new URL('../public/auth-callback.js',import.meta.url)),'text/javascript; charset=utf-8');}
  if(path==='/assets/ffmpeg.js') {const fs=await import('node:fs/promises');return send(res,200,await fs.readFile(new URL('../public/ffmpeg.js',import.meta.url)),'text/javascript; charset=utf-8');}
- if(path.startsWith('/assets/')||path==='/favicon.svg') {if(!session(req))return send(res,302,'','text/plain; charset=utf-8',{Location:`/auth/login?next=${encodeURIComponent('/hyperframes')}`});return proxyPreview(req,res,req.url||'/');}
+ if(path.startsWith('/assets/')||path==='/favicon.svg') {if(!session(req))return send(res,302,'','text/plain; charset=utf-8',{Location:`/login?next=${encodeURIComponent('/hyperframes')}`});return proxyPreview(req,res,req.url||'/');}
  return send(res,404,'Not found.');
 }
 setInterval(()=>{const now=Date.now();for(const [key,s] of sessions)if(s.expires<=now)sessions.delete(key)},60000).unref();
