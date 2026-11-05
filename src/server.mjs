@@ -6,6 +6,8 @@ import {mkdir,access,mkdtemp,stat,rm} from 'node:fs/promises';
 import path from 'node:path';
 import os from 'node:os';
 import {createWriteStream,createReadStream} from 'node:fs';
+import {Transform} from 'node:stream';
+import {StringDecoder} from 'node:string_decoder';
 
 const execFileAsync = promisify(execFile);
 const port = Number(process.env.PORT) || 3000;
@@ -123,14 +125,45 @@ function proxyGoogleMaps(req,res,upstreamPath) {
  const upstream=http.request({hostname:'tools-google-maps-scraper',port:8080,path:upstreamPath,method:req.method,headers:{...req.headers,host:'tools-google-maps-scraper:8080','x-forwarded-host':req.headers.host||'tools.complexelite.com','x-forwarded-proto':'https'}},response=>{res.writeHead(response.statusCode||502,response.statusMessage,response.headers);response.pipe(res);});
  upstream.on('error',()=>{if(!res.headersSent)send(res,502,'Google Maps Scraper is starting or unavailable. Retry shortly.');else res.destroy();});req.pipe(upstream);
 }
+const openReplyInternalPrefix='/tools/openreply';
+const openReplyPublicPrefix='/openreply';
+const openReplyEncodedPrefix=encodeURIComponent(openReplyInternalPrefix);
+function rewriteOpenReplyReference(value) {
+ if(Array.isArray(value))return value.map(rewriteOpenReplyReference);
+ if(typeof value!=='string')return value;
+ return value.replaceAll(openReplyInternalPrefix,openReplyPublicPrefix).replace(new RegExp(openReplyEncodedPrefix,'ig'),encodeURIComponent(openReplyPublicPrefix));
+}
+function rewriteOpenReplyBody() {
+ let carry='';
+ const decoder=new StringDecoder('utf8');
+ const keep=Math.max(openReplyInternalPrefix.length,openReplyEncodedPrefix.length)-1;
+ return new Transform({
+  transform(chunk,encoding,callback) {
+   const input=carry+decoder.write(chunk);
+   const safeLength=Math.max(0,input.length-keep);
+   carry=input.slice(safeLength);
+   callback(null,rewriteOpenReplyReference(input.slice(0,safeLength)));
+  },
+  flush(callback) { callback(null,rewriteOpenReplyReference(carry+decoder.end())); }
+ });
+}
 function proxyOpenReply(req,res,upstreamPath) {
- const headers={...req.headers,host:'tools.complexelite.com','x-forwarded-host':req.headers.host||'tools.complexelite.com','x-forwarded-proto':'https'};
+ const headers={...req.headers,host:'tools.complexelite.com','x-forwarded-host':req.headers.host||'tools.complexelite.com','x-forwarded-proto':'https','accept-encoding':'identity'};
  if(req.headers.origin) {
   try { if(new URL(req.headers.origin).host!==(req.headers.host||'')){req.resume();return send(res,403,'Cross-origin OpenReply request refused.');} }
   catch {req.resume();return send(res,403,'Invalid OpenReply request origin.');}
   // OpenReply validates its canonical Tools origin after this gateway checks the browser origin.
  }
- const upstream=http.request({hostname:'tools-openreply-web',port:3000,path:upstreamPath,method:req.method,headers},response=>{res.writeHead(response.statusCode||502,response.statusMessage,response.headers);response.pipe(res);});
+ const upstream=http.request({hostname:'tools-openreply-web',port:3000,path:upstreamPath,method:req.method,headers},response=>{
+  const responseHeaders={...response.headers};
+  for(const key of ['location','link','content-security-policy','content-security-policy-report-only'])if(responseHeaders[key])responseHeaders[key]=rewriteOpenReplyReference(responseHeaders[key]);
+  if(responseHeaders['set-cookie'])responseHeaders['set-cookie']=responseHeaders['set-cookie'].map(rewriteOpenReplyReference);
+  const contentType=String(responseHeaders['content-type']||'');
+  const rewriteBody=/^(text\/|application\/(?:javascript|json|manifest\+json|xml)|image\/svg\+xml)/i.test(contentType)&&!responseHeaders['content-encoding'];
+  if(rewriteBody)for(const key of ['content-length','content-md5','digest','etag'])delete responseHeaders[key];
+  res.writeHead(response.statusCode||502,response.statusMessage,responseHeaders);
+  if(rewriteBody)response.pipe(rewriteOpenReplyBody()).pipe(res);else response.pipe(res);
+ });
  upstream.on('error',()=>{if(!res.headersSent)send(res,502,'OpenReply is starting or unavailable. Retry shortly.');else res.destroy();});req.pipe(upstream);
 }
 function proxyScrapling(req,res,upstreamPath) {
@@ -175,13 +208,15 @@ async function handle(req,res) {
    if(!session(req)) {req.resume();return send(res,302,'','text/plain; charset=utf-8',{Location:`/auth/login?next=${encodeURIComponent('/ai-video-captions')}`});}
    return proxyAiCaptions(req,res,req.url||'/');
  }
- if(path==='/openreply'||path==='/openreply/') {
-   if(!session(req))return send(res,302,'','text/plain; charset=utf-8',{Location:`/auth/login?next=${encodeURIComponent('/openreply')}`});
-   return send(res,302,'','text/plain; charset=utf-8',{Location:'/tools/openreply'});
- }
  if(path==='/tools/openreply'||path.startsWith('/tools/openreply/')) {
+   const publicPath=path.slice('/tools'.length)+url.search;
+   return send(res,308,'','text/plain; charset=utf-8',{Location:publicPath});
+ }
+ if(path==='/openreply'||path.startsWith('/openreply/')) {
    if(!session(req)) {req.resume();return send(res,302,'','text/plain; charset=utf-8',{Location:`/auth/login?next=${encodeURIComponent('/openreply')}`});}
-   return proxyOpenReply(req,res,req.url||'/tools/openreply/');
+   const suffix=path.slice(openReplyPublicPrefix.length)||'';
+   const upstreamPath=`${openReplyInternalPrefix}${suffix}${url.search}`;
+   return proxyOpenReply(req,res,upstreamPath);
  }
  if(path==='/scrapling'||path==='/scrapling/') {
    const s=session(req);if(!s)return send(res,302,'','text/plain; charset=utf-8',{Location:`/auth/login?next=${encodeURIComponent('/scrapling')}`});
