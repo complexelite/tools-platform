@@ -2,7 +2,7 @@
 
 Private Perfex-staff tools at `tools.complexelite.com/hyperframes`, `/ffmpeg`, `/google-maps-scraper`, `/openreply`, `/scrapling`, and `/ai-video-captions`.
 
-The hostname root is a small installed-tools landing page. Each application path is explicit; unknown paths return 404 instead of falling through to another tool.
+The hostname root is a private installed-tools catalogue. Signed-out visitors see the Complex Elite branded sign-in page at `/login`; selecting Continue starts the existing one-time Perfex staff SSO handoff. Tools never asks for or stores Perfex credentials. After authentication the user returns to the Tools catalogue. Each application path is explicit; unknown paths return 404 instead of falling through to another tool.
 
 - HyperFrames is pinned to the official `0.8.226` CLI release, sourced from the [upstream project](https://github.com/heygen-com/hyperframes).
 - FFmpeg is compiled from [upstream FFmpeg](https://github.com/FFmpeg/FFmpeg) at commit `aab6cec3e8415154b3f0570f8d131db07a9901de`. The build disables network protocols and provides a static CLI binary.
