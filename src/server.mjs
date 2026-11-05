@@ -44,6 +44,8 @@ const pages = new Map([
   ['/openreply','openreply'], ['/openreply/','openreply'],
   ['/scrapling','scrapling'], ['/scrapling/','scrapling'],
   ['/ai-video-captions','ai-video-captions'], ['/ai-video-captions/','ai-video-captions'],
+  ['/api/docs','api-docs'], ['/api/docs/','api-docs'],
+  ['/google-maps-scraper/api/docs','api-docs'], ['/google-maps-scraper/api/docs/','api-docs'],
 ]);
 const mapsRootPaths=['/static/','/scrape','/download','/delete','/jobs','/view','/api/docs','/api/v1/'];
 function send(res,status,body,type='text/plain; charset=utf-8',headers={}) {
@@ -245,6 +247,11 @@ async function handle(req,res) {
    return proxyScrapling(req,res,upstreamPath);
  }
  const mapsPage=path==='/google-maps-scraper'||path==='/google-maps-scraper/';
+ if(pages.get(path)==='api-docs'&&req.method==='GET') {
+   if(!session(req))return send(res,302,'','text/plain; charset=utf-8',{Location:`/login?next=${encodeURIComponent(path)}`});
+   const fs=await import('node:fs/promises');
+   return send(res,200,await fs.readFile(new URL('../public/api-docs.html',import.meta.url)),'text/html; charset=utf-8');
+ }
  const mapsAppPath=path==='/google-maps-scraper'||path.startsWith('/google-maps-scraper/');
  const mapsRootAsset=mapsRootPaths.some(prefix=>path===prefix||path.startsWith(prefix))&&!path.startsWith('/api/v1/runtime/');
  if(mapsAppPath||mapsRootAsset) {
