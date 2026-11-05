@@ -8,6 +8,7 @@ import os from 'node:os';
 import {createWriteStream,createReadStream} from 'node:fs';
 import {Transform} from 'node:stream';
 import {StringDecoder} from 'node:string_decoder';
+import {legacyGoogleMapsPath} from './google-maps-routes.mjs';
 
 const execFileAsync = promisify(execFile);
 const port = Number(process.env.PORT) || 3000;
@@ -44,10 +45,8 @@ const pages = new Map([
   ['/openreply','openreply'], ['/openreply/','openreply'],
   ['/scrapling','scrapling'], ['/scrapling/','scrapling'],
   ['/ai-video-captions','ai-video-captions'], ['/ai-video-captions/','ai-video-captions'],
-  ['/api/docs','api-docs'], ['/api/docs/','api-docs'],
   ['/google-maps-scraper/api/docs','api-docs'], ['/google-maps-scraper/api/docs/','api-docs'],
 ]);
-const mapsRootPaths=['/static/','/scrape','/download','/delete','/jobs','/view','/api/docs','/api/v1/'];
 function send(res,status,body,type='text/plain; charset=utf-8',headers={}) {
   res.writeHead(status,{'Content-Type':type,'Cache-Control':'no-store','X-Content-Type-Options':'nosniff','Referrer-Policy':'no-referrer','X-Frame-Options':'DENY',...headers}); res.end(body);
 }
@@ -247,20 +246,15 @@ async function handle(req,res) {
    return proxyScrapling(req,res,upstreamPath);
  }
  const mapsPage=path==='/google-maps-scraper'||path==='/google-maps-scraper/';
- if(pages.get(path)==='api-docs'&&req.method==='GET') {
-   if(!session(req))return send(res,302,'','text/plain; charset=utf-8',{Location:`/login?next=${encodeURIComponent(path)}`});
-   const fs=await import('node:fs/promises');
-   return send(res,200,await fs.readFile(new URL('../public/api-docs.html',import.meta.url)),'text/html; charset=utf-8');
- }
+ const legacyMapsPath=legacyGoogleMapsPath(path);
+ if(legacyMapsPath)return send(res,308,'','text/plain; charset=utf-8',{Location:legacyMapsPath+url.search});
  const mapsAppPath=path==='/google-maps-scraper'||path.startsWith('/google-maps-scraper/');
- const mapsRootAsset=mapsRootPaths.some(prefix=>path===prefix||path.startsWith(prefix))&&!path.startsWith('/api/v1/runtime/');
- if(mapsAppPath||mapsRootAsset) {
+ if(mapsAppPath) {
    if(!session(req)) {
-     if(mapsPage)return send(res,302,'','text/plain; charset=utf-8',{Location:`/login?next=${encodeURIComponent('/google-maps-scraper')}`});
+     if(mapsPage||pages.get(path)==='api-docs')return send(res,302,'','text/plain; charset=utf-8',{Location:`/login?next=${encodeURIComponent(path)}`});
      req.resume();return send(res,401,'Perfex staff sign-in is required.','text/plain; charset=utf-8');
    }
-   const upstreamPath=mapsAppPath?`${path.slice('/google-maps-scraper'.length)||'/'}${url.search}`:req.url||'/';
-   return proxyGoogleMaps(req,res,upstreamPath);
+   return proxyGoogleMaps(req,res,req.url||'/');
  }
  const slug=pages.get(path);
  if(slug==='hyperframes') {if(!session(req))return send(res,302,'','text/plain; charset=utf-8',{Location:`/login?next=${encodeURIComponent(path)}`});return send(res,302,'','text/plain; charset=utf-8',{Location:'/hyperframes/editor/#project/default'});}
