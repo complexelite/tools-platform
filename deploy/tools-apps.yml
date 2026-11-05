@@ -91,7 +91,7 @@ services:
         condition: on-failure
 
   google-maps-scraper:
-    image: complexelite/google-maps-scraper:ce-cd3e92c
+    image: complexelite/google-maps-scraper:ce-509813c
     command: ["-data-folder", "/gmapsdata"]
     environment:
       GOOGLE_MAPS_BASE_URL: https://tools.complexelite.com/google-maps-scraper
