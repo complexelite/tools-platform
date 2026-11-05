@@ -120,23 +120,21 @@ function proxyPreview(req,res,upstreamPath=req.url||'/',stripEditorPrefix=false)
  upstream.on('error',()=>{if(!res.headersSent)send(res,502,'HyperFrames Studio is starting or unavailable. Retry shortly.');else res.destroy();}); req.pipe(upstream);
 }
 function proxyGoogleMaps(req,res,upstreamPath) {
- const upstream=http.request({hostname:'google-maps-scraper',port:8080,path:upstreamPath,method:req.method,headers:{...req.headers,host:'google-maps-scraper:8080','x-forwarded-host':req.headers.host||'tools.complexelite.com','x-forwarded-proto':'https'}},response=>{res.writeHead(response.statusCode||502,response.statusMessage,response.headers);response.pipe(res);});
+ const upstream=http.request({hostname:'tools-google-maps-scraper',port:8080,path:upstreamPath,method:req.method,headers:{...req.headers,host:'tools-google-maps-scraper:8080','x-forwarded-host':req.headers.host||'tools.complexelite.com','x-forwarded-proto':'https'}},response=>{res.writeHead(response.statusCode||502,response.statusMessage,response.headers);response.pipe(res);});
  upstream.on('error',()=>{if(!res.headersSent)send(res,502,'Google Maps Scraper is starting or unavailable. Retry shortly.');else res.destroy();});req.pipe(upstream);
 }
 function proxyOpenReply(req,res,upstreamPath) {
- const headers={...req.headers,host:'leads.complexelite.com','x-forwarded-host':req.headers.host||'tools.complexelite.com','x-forwarded-proto':'https'};
+ const headers={...req.headers,host:'tools.complexelite.com','x-forwarded-host':req.headers.host||'tools.complexelite.com','x-forwarded-proto':'https'};
  if(req.headers.origin) {
   try { if(new URL(req.headers.origin).host!==(req.headers.host||'')){req.resume();return send(res,403,'Cross-origin OpenReply request refused.');} }
   catch {req.resume();return send(res,403,'Invalid OpenReply request origin.');}
-  // The gateway has checked the browser origin against this host. OpenReply still
-  // validates its configured canonical origin, which remains the Leads hostname.
-  headers.origin='https://leads.complexelite.com';
+  // OpenReply validates its canonical Tools origin after this gateway checks the browser origin.
  }
- const upstream=http.request({hostname:'openreply-web',port:3000,path:upstreamPath,method:req.method,headers},response=>{res.writeHead(response.statusCode||502,response.statusMessage,response.headers);response.pipe(res);});
+ const upstream=http.request({hostname:'tools-openreply-web',port:3000,path:upstreamPath,method:req.method,headers},response=>{res.writeHead(response.statusCode||502,response.statusMessage,response.headers);response.pipe(res);});
  upstream.on('error',()=>{if(!res.headersSent)send(res,502,'OpenReply is starting or unavailable. Retry shortly.');else res.destroy();});req.pipe(upstream);
 }
 function proxyScrapling(req,res,upstreamPath) {
- const upstream=http.request({hostname:'scrapling',port:8000,path:upstreamPath,method:req.method,headers:{...req.headers,host:'scrapling:8000','x-forwarded-host':req.headers.host||'tools.complexelite.com','x-forwarded-proto':'https'}},response=>{res.writeHead(response.statusCode||502,response.statusMessage,response.headers);response.pipe(res);});
+ const upstream=http.request({hostname:'tools-scrapling',port:8000,path:upstreamPath,method:req.method,headers:{...req.headers,host:'tools-scrapling:8000','x-forwarded-host':req.headers.host||'tools.complexelite.com','x-forwarded-proto':'https'}},response=>{res.writeHead(response.statusCode||502,response.statusMessage,response.headers);response.pipe(res);});
  upstream.on('error',()=>{if(!res.headersSent)send(res,502,'Scrapling is starting or unavailable. Retry shortly.');else res.destroy();});req.pipe(upstream);
 }
 function proxyAiCaptions(req,res,upstreamPath) {
@@ -179,7 +177,7 @@ async function handle(req,res) {
  }
  if(path==='/openreply'||path==='/openreply/') {
    if(!session(req))return send(res,302,'','text/plain; charset=utf-8',{Location:`/auth/login?next=${encodeURIComponent('/openreply')}`});
-   return send(res,302,'','text/plain; charset=utf-8',{Location:'/tools/openreply/'});
+   return send(res,302,'','text/plain; charset=utf-8',{Location:'/tools/openreply'});
  }
  if(path==='/tools/openreply'||path.startsWith('/tools/openreply/')) {
    if(!session(req)) {req.resume();return send(res,302,'','text/plain; charset=utf-8',{Location:`/auth/login?next=${encodeURIComponent('/openreply')}`});}

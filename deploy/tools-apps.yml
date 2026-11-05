@@ -1,0 +1,129 @@
+# Tools-owned copies of the applications previously hosted by Leads.
+# The external dokploy-network is shared with the Tools gateway; only the gateway
+# publishes browser routes. Secrets are supplied from the root-only server env file.
+services:
+  openreply-db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: ${OPENREPLY_POSTGRES_DB:?required}
+      POSTGRES_USER: ${OPENREPLY_POSTGRES_USER:?required}
+      POSTGRES_PASSWORD: ${OPENREPLY_POSTGRES_PASSWORD:?required}
+    volumes:
+      - openreply-db:/var/lib/postgresql/data
+    networks:
+      dokploy-network:
+        aliases: [tools-openreply-db]
+    deploy:
+      restart_policy:
+        condition: on-failure
+
+  openreply-redis:
+    image: redis:7-alpine
+    volumes:
+      - openreply-redis:/data
+    networks:
+      dokploy-network:
+        aliases: [tools-openreply-redis]
+    deploy:
+      restart_policy:
+        condition: on-failure
+
+  openreply-web:
+    image: ${OPENREPLY_IMAGE:-complexelite/openreply:0.1.4-ce1}
+    environment:
+      ALLOWED_EMAILS: ${OPENREPLY_ALLOWED_EMAILS:-}
+      AUTH_TRUST_HOST: ${OPENREPLY_AUTH_TRUST_HOST:-true}
+      BASE_PATH: ${OPENREPLY_BASE_PATH:-/tools/openreply}
+      CRON_SECRET: ${OPENREPLY_CRON_SECRET:?required}
+      DATABASE_URL: ${OPENREPLY_DATABASE_URL:?required}
+      EMAIL_FROM: ${OPENREPLY_EMAIL_FROM:-OpenReply <login@example.com>}
+      EMAIL_SERVER: ${OPENREPLY_EMAIL_SERVER:-}
+      ENCRYPTION_KEY: ${OPENREPLY_ENCRYPTION_KEY:?required}
+      NEXTAUTH_SECRET: ${OPENREPLY_NEXTAUTH_SECRET:?required}
+      NEXTAUTH_URL: ${OPENREPLY_NEXTAUTH_URL:?required}
+      AUTH_URL: ${OPENREPLY_AUTH_URL:?required}
+      NODE_ENV: production
+      REDIS_URL: ${OPENREPLY_REDIS_URL:?required}
+      RESEND_API_KEY: ${OPENREPLY_RESEND_API_KEY:-}
+    networks:
+      dokploy-network:
+        aliases: [tools-openreply-web]
+    deploy:
+      replicas: 1
+      restart_policy:
+        condition: on-failure
+
+  openreply-worker:
+    image: ${OPENREPLY_IMAGE:-complexelite/openreply:0.1.4-ce1}
+    command: ["npm", "run", "worker"]
+    environment:
+      ALLOWED_EMAILS: ${OPENREPLY_ALLOWED_EMAILS:-}
+      AUTH_TRUST_HOST: ${OPENREPLY_AUTH_TRUST_HOST:-true}
+      BASE_PATH: ${OPENREPLY_BASE_PATH:-/tools/openreply}
+      CRON_SECRET: ${OPENREPLY_CRON_SECRET:?required}
+      DATABASE_URL: ${OPENREPLY_DATABASE_URL:?required}
+      EMAIL_FROM: ${OPENREPLY_EMAIL_FROM:-OpenReply <login@example.com>}
+      EMAIL_SERVER: ${OPENREPLY_EMAIL_SERVER:-}
+      ENCRYPTION_KEY: ${OPENREPLY_ENCRYPTION_KEY:?required}
+      NEXTAUTH_SECRET: ${OPENREPLY_NEXTAUTH_SECRET:?required}
+      NEXTAUTH_URL: ${OPENREPLY_NEXTAUTH_URL:?required}
+      AUTH_URL: ${OPENREPLY_AUTH_URL:?required}
+      NODE_ENV: production
+      REDIS_URL: ${OPENREPLY_REDIS_URL:?required}
+      RESEND_API_KEY: ${OPENREPLY_RESEND_API_KEY:-}
+    networks: [dokploy-network]
+    deploy:
+      replicas: 1
+      restart_policy:
+        condition: on-failure
+
+  openreply-cron:
+    image: ${OPENREPLY_IMAGE:-complexelite/openreply:0.1.4-ce1}
+    command: ["sh", "scripts/cron.sh"]
+    environment:
+      CRON_BASE_URL: http://tools-openreply-web:3000/tools/openreply
+      CRON_SECRET: ${OPENREPLY_CRON_SECRET:?required}
+      NEXTAUTH_SECRET: ${OPENREPLY_NEXTAUTH_SECRET:?required}
+    networks: [dokploy-network]
+    deploy:
+      replicas: 1
+      restart_policy:
+        condition: on-failure
+
+  google-maps-scraper:
+    image: complexelite/google-maps-scraper:903b96d
+    command: ["-data-folder", "/gmapsdata"]
+    volumes:
+      - maps-data:/gmapsdata
+    networks:
+      dokploy-network:
+        aliases: [tools-google-maps-scraper]
+    deploy:
+      replicas: 1
+      restart_policy:
+        condition: on-failure
+
+  scrapling:
+    image: ghcr.io/d4vinci/scrapling:latest
+    command: ["mcp", "--http", "--host", "0.0.0.0", "--port", "8000", "--allowed-host", "tools.complexelite.com"]
+    environment:
+      SCRAPLING_MCP_AUTH_TOKEN: ${SCRAPLING_MCP_AUTH_TOKEN:?required}
+    networks:
+      dokploy-network:
+        aliases: [tools-scrapling]
+    deploy:
+      replicas: 1
+      restart_policy:
+        condition: on-failure
+
+networks:
+  dokploy-network:
+    external: true
+
+volumes:
+  openreply-db:
+    name: tools_openreply-db
+  openreply-redis:
+    name: tools_openreply-redis
+  maps-data:
+    name: tools_maps-data
