@@ -215,7 +215,8 @@ async function handle(req,res) {
     return send(res,303,'','text/plain; charset=utf-8',{...headers,Location:pages.has(next)?next:'/'});
    } catch {return send(res,502,'Perfex sign-in could not be reached. Retry shortly.');}
  }
- if(path==='/auth/logout'&&req.method==='POST') {const fetchSite=String(req.headers['sec-fetch-site']||'').toLowerCase();if(fetchSite&&fetchSite!=='same-origin')return send(res,403,'Request refused.');const s=session(req);if(s)sessions.delete(s.token);return send(res,303,'','text/plain; charset=utf-8',{Location:'/','Set-Cookie':cookie(cookieName,'',0)});}
+ if(path==='/auth/logout'&&req.method==='POST') {const fetchSite=String(req.headers['sec-fetch-site']||'').toLowerCase();if(fetchSite&&fetchSite!=='same-origin')return send(res,403,'Request refused.');const s=session(req);if(s)sessions.delete(s.token);return send(res,303,'','text/plain; charset=utf-8',{Location:'https://clients.complexelite.com/studio/sso/logout','Set-Cookie':cookie(cookieName,'',0)});}
+ if(path==='/auth/slo-logout'&&req.method==='GET') {const s=session(req);if(s)sessions.delete(s.token);return send(res,303,'','text/plain; charset=utf-8',{Location:'https://clients.complexelite.com/studio/sso/logout?step=2','Set-Cookie':cookie(cookieName,'',0)});}
  if(path==='/'&&req.method==='GET') {const s=session(req);if(!s)return send(res,302,'','text/plain; charset=utf-8',{Location:'/login'});return send(res,200,catalogPage(s.user),'text/html; charset=utf-8',{'Content-Security-Policy':"default-src 'self'; style-src 'self'; script-src 'self'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'"});}
  const api=path.match(/^\/api\/v1\/runtime\/(hyperframes|ffmpeg)$/);
  if(api&&req.method==='GET') {if(!authenticatedApi(req))return send(res,401,JSON.stringify({ok:false,error:'Unauthorized'}),'application/json');return send(res,200,JSON.stringify(await probe(api[1])),'application/json');}
