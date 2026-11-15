@@ -5,6 +5,14 @@ RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates
 WORKDIR /src
 RUN git init ffmpeg && cd ffmpeg && git remote add origin https://github.com/FFmpeg/FFmpeg.git && git fetch --depth 1 origin "$FFMPEG_COMMIT" && git checkout --detach FETCH_HEAD && ./configure --prefix=/opt/ffmpeg --disable-doc --disable-debug --disable-network --disable-shared --enable-static --disable-ffplay && make -j2 && make install
 
+FROM node:22-bookworm-slim AS firecrawl-ui-build
+WORKDIR /app
+COPY package.json package-lock.json ./
+RUN npm ci
+COPY ui ./ui
+COPY vite.config.js ./
+RUN npm run build
+
 FROM node:22-bookworm-slim
 ENV NODE_ENV=production PORT=3000 PATH="/app/node_modules/.bin:/opt/ffmpeg/bin:${PATH}" CHROME_BIN=/usr/bin/chromium
 RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates chromium fonts-liberation && rm -rf /var/lib/apt/lists/*
@@ -14,6 +22,7 @@ COPY package.json package-lock.json ./
 RUN npm ci --omit=dev --ignore-scripts && npm cache clean --force
 COPY src ./src
 COPY public ./public
+COPY --from=firecrawl-ui-build /app/public/firecrawl ./public/firecrawl
 RUN mkdir -p /data && chown node:node /data
 USER node
 VOLUME ["/data"]

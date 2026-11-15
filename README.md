@@ -20,3 +20,11 @@ The hostname root is a private installed-tools catalogue. Signed-out visitors se
 - The tools run in a shared runtime container. No arbitrary shell or remote URL processing is exposed. Other apps can use the authenticated conversion endpoint with supported presets; output is returned directly and not retained as a Studio resource.
 
 The app services and routing source are tracked here in `deploy/tools-apps.yml`; secrets remain in `/etc/complexelite/tools-apps.env` on the VPS. Deploy this Swarm stack with `deploy/deploy-tools-apps.sh`. The previous Leads services remain intact for rollback until cutover checks are complete.
+
+### Firecrawl workspace and agent skills
+
+- `/firecrawl` is the signed-in React workspace for Firecrawl v2. It supports single-page scrape, web search, crawl with status polling/cancellation, and domain map. The app bundle is built by Vite and served as static assets by the existing Tools gateway; browser requests keep the existing Perfex staff session and never expose the server HMAC secret.
+- The workspace keeps only the last six request labels and targets in the current browser's local storage. Scraped results are not persisted by the UI. API results can be copied or downloaded as JSON.
+- The relevant official Firecrawl application-integration skills are vendored under `.agents/skills/` for Codex-compatible project agents: `firecrawl-build`, `firecrawl-build-scrape`, `firecrawl-build-search`, and `firecrawl-build-interact`. They are from `firecrawl/skills` commit `1d4b072` and licensed under ISC. They describe integration patterns; do not place API credentials in skill files.
+- Self-hosted endpoint requests from the React UI go through `/firecrawl/v2/*` and are protected by the gateway's Perfex staff session. Trusted server integrations continue to use the timestamped HMAC contract documented above.
+- `.agents/skills/firecrawl-complexelite/SKILL.md` documents the existing same-origin session and server HMAC requirements for this self-hosted instance, so future integrations do not accidentally expose credentials or call the upstream API directly.
