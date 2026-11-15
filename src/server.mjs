@@ -386,7 +386,10 @@ async function handle(req,res) {
     RETURNING id,firecrawl_job_id AS job_id,workflow,target,status,total,completed,page_count,created_at`,[s.user.id,jobId,workflow,parsedTarget.toString(),total,completed,pages.length,JSON.stringify(result)]);
    await firecrawlWorkspaceDb.query(`DELETE FROM firecrawl_saved_crawls WHERE user_id=$1 AND id IN (SELECT id FROM firecrawl_saved_crawls WHERE user_id=$1 ORDER BY created_at DESC OFFSET 100)`,[s.user.id]);
    return firecrawlWorkspaceResponse(res,201,{crawl:saved.rows[0]});
-  } catch(error) {return firecrawlWorkspaceResponse(res,error.statusCode||500,{error:error.statusCode?error.message:'Could not access Firecrawl crawl storage.'});}
+  } catch(error) {
+   console.error('[firecrawl-workspace] Storage request failed:',JSON.stringify({status:error.statusCode||500,code:String(error.code||'').slice(0,32)||null}));
+   return firecrawlWorkspaceResponse(res,error.statusCode||500,{error:error.statusCode?error.message:'Could not access Firecrawl crawl storage.'});
+  }
  }
  if(path==='/login'&&req.method==='GET') {const requested=url.searchParams.get('next')||'/',next=pages.has(requested)?requested:'/';if(session(req))return send(res,303,'','text/plain; charset=utf-8',{Location:next});return send(res,200,signInPage(next),'text/html; charset=utf-8',{'Content-Security-Policy':"default-src 'self'; style-src 'self'; script-src 'self'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'"});}
  if(path==='/auth/login'&&req.method==='GET') {
