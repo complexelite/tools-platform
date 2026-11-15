@@ -126,7 +126,9 @@ services:
       POSTGRES_DB: postgres
     volumes:
       - firecrawl-postgres:/var/lib/postgresql/data
-    networks: [firecrawl-private]
+    networks:
+      firecrawl-private:
+        aliases: [firecrawl-postgres]
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U postgres -d postgres"]
       interval: 10s
@@ -147,7 +149,9 @@ services:
     command: ["redis-server", "--bind", "0.0.0.0", "--appendonly", "yes"]
     volumes:
       - firecrawl-redis:/data
-    networks: [firecrawl-private]
+    networks:
+      firecrawl-private:
+        aliases: [firecrawl-redis]
     deploy:
       replicas: 1
       resources:
@@ -159,9 +163,9 @@ services:
 
   firecrawl-rabbitmq:
     image: rabbitmq:3-management
-    volumes:
-      - firecrawl-rabbitmq:/var/lib/rabbitmq
-    networks: [firecrawl-private]
+    networks:
+      firecrawl-private:
+        aliases: [firecrawl-rabbitmq]
     healthcheck:
       test: ["CMD", "rabbitmq-diagnostics", "-q", "check_running"]
       interval: 10s
@@ -182,7 +186,10 @@ services:
     environment:
       PORT: "3000"
       MAX_CONCURRENT_PAGES: "1"
-    networks: [firecrawl-private]
+    networks:
+      firecrawl-private:
+        aliases: [firecrawl-playwright]
+      firecrawl-egress: {}
     security_opt:
       - no-new-privileges:true
     cap_drop:
@@ -224,6 +231,7 @@ services:
       HARNESS_STARTUP_TIMEOUT_MS: "60000"
     networks:
       firecrawl-private: {}
+      firecrawl-egress: {}
       dokploy-network:
         aliases: [tools-firecrawl-api]
     healthcheck:
@@ -247,6 +255,8 @@ networks:
   firecrawl-private:
     driver: overlay
     internal: true
+  firecrawl-egress:
+    driver: overlay
 
 volumes:
   openreply-db:
@@ -259,5 +269,3 @@ volumes:
     name: tools_firecrawl-postgres
   firecrawl-redis:
     name: tools_firecrawl-redis
-  firecrawl-rabbitmq:
-    name: tools_firecrawl-rabbitmq
