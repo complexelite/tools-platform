@@ -21,10 +21,53 @@ function downloadJson(value, name) {
   const href = URL.createObjectURL(blob); const link = document.createElement('a');
   link.href = href; link.download = `${name}-${new Date().toISOString().slice(0, 10)}.json`; link.click(); URL.revokeObjectURL(href);
 }
+function downloadCsv(rows, name) {
+  const list = Array.isArray(rows) ? rows : [];
+  const keys = [...new Set(list.flatMap((row) => Object.keys(row || {})))];
+  const quote = (value) => `"${String(value ?? '').replace(/"/g, '""').replace(/\s+/g, ' ').trim()}"`;
+  const csv = [keys.map(quote).join(','), ...list.map((row) => keys.map((key) => quote(typeof row[key] === 'object' ? JSON.stringify(row[key]) : row[key])).join(','))].join('\r\n');
+  const blob = new Blob([csv], { type: 'text/csv;charset=utf-8' });
+  const href = URL.createObjectURL(blob); const link = document.createElement('a');
+  link.href = href; link.download = `${name}-${new Date().toISOString().slice(0, 10)}.csv`; link.click(); URL.revokeObjectURL(href);
+}
+const workflows = [
+  { id: 'handover', title: 'Client website handover', tag: 'REBUILD / MIGRATION', icon: '↗', text: 'Capture the old site’s page names, copy, business details and contact candidates before rebuilding it.' },
+  { id: 'leads', title: 'Find business leads', tag: 'PROSPECTING', icon: '⌕', text: 'Search for companies by service or industry and location, then export a sourced prospect list.' },
+  { id: 'audit', title: 'Website audit', tag: 'SEO / CONTENT', icon: '◎', text: 'Review crawlable pages for metadata, headings, status and internal-link opportunities.' },
+  { id: 'competitors', title: 'Competitor research', tag: 'MARKET RESEARCH', icon: '◉', text: 'Discover competitor sites and compare their published services, positioning and page structure.' },
+];
+function contactCandidates(pages) {
+  const found = new Map();
+  for (const page of pages) {
+    const text = `${page?.markdown || ''}\n${page?.metadata?.description || ''}`;
+    for (const email of text.match(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi) || []) found.set(`email:${email.toLowerCase()}`, { type: 'Email candidate', value: email, source: urlOf(page) });
+    for (const phone of text.match(/(?:\+?\d[\d ()./-]{7,}\d)/g) || []) {
+      const value = phone.trim().replace(/\s+/g, ' ');
+      if (value.replace(/\D/g, '').length >= 9) found.set(`phone:${value.replace(/\D/g, '')}`, { type: 'Phone candidate', value, source: urlOf(page) });
+    }
+  }
+  return [...found.values()];
+}
+function auditFindings(pages) {
+  return pages.map((page) => {
+    const meta = page?.metadata || {}; const markdown = page?.markdown || '';
+    const title = meta.title || ''; const description = meta.description || '';
+    const headings = [...markdown.matchAll(/^#{1,6}\s+(.+)$/gm)].map((match) => match[1].trim());
+    const status = Number(meta.statusCode || meta.status_code || 0);
+    return { url: urlOf(page), title: title || 'Missing / not returned', description: description || 'Missing / not returned', status: status || 'Not returned', h1: headings.find((heading) => /^#\s/.test(markdown) && heading) || 'No H1 found in extracted Markdown', headings: headings.length, links: Array.isArray(page?.links) ? page.links.length : 0, findings: [!title && 'Title missing from returned metadata', !description && 'Meta description missing from returned metadata', !headings.some((heading) => /^#\s/.test(markdown)) && 'No H1 found in extracted Markdown', status >= 400 && `Page returned status ${status}`].filter(Boolean) };
+  });
+}
 
 function App() {
   const historyKey = `ce-firecrawl-history:${document.getElementById('root')?.dataset.userId || 'session'}`;
   const [mode, setMode] = useState('scrape');
+  const [activeWorkflow, setActiveWorkflow] = useState('');
+  const [industry, setIndustry] = useState('');
+  const [location, setLocation] = useState('');
+  const [includePaths, setIncludePaths] = useState('');
+  const [excludePaths, setExcludePaths] = useState('');
+  const [sitemap, setSitemap] = useState('include');
+  const [advanced, setAdvanced] = useState(false);
   const [url, setUrl] = useState('');
   const [query, setQuery] = useState('');
   const [limit, setLimit] = useState('10');
@@ -40,7 +83,7 @@ function App() {
     try { return JSON.parse(localStorage.getItem(historyKey) || '[]'); } catch { return []; }
   });
 
-  useEffect(() => { setLimit(mode === 'search' ? '10' : mode === 'map' ? '100' : '50'); }, [mode]);
+  useEffect(() => { setLimit(activeWorkflow === 'audit' ? '25' : activeWorkflow === 'handover' ? '50' : mode === 'search' ? '10' : mode === 'map' ? '100' : '50'); }, [mode, activeWorkflow]);
 
   const selectedMode = modes.find((item) => item.id === mode);
   const results = useMemo(() => {
@@ -102,7 +145,13 @@ function App() {
     setStatus({ busy: true, message: 'Connecting to Firecrawl…' });
     try {
       let data;
-      if (mode === 'search') {
+      if (activeWorkflow === 'leads' || activeWorkflow === 'competitors') {
+        const terms = activeWorkflow === 'leads' ? industry.trim() : query.trim();
+        if (!terms) throw new Error(activeWorkflow === 'leads' ? 'Enter a business type or service.' : 'Enter a competitor topic or business type.');
+        const builtQuery = [terms, location.trim(), activeWorkflow === 'leads' ? 'businesses website contact' : 'competitors services'].filter(Boolean).join(' ');
+        data = await request('/v2/search', { query: builtQuery, limit: Math.min(100, Math.max(1, Number(limit) || 10)), sources: [{ type: 'web' }], scrapeOptions: { formats: ['markdown'] } });
+        addHistory(activeWorkflow === 'leads' ? 'Lead search' : 'Competitor research', builtQuery);
+      } else if (mode === 'search') {
         if (!query.trim()) throw new Error('Enter a search query first.');
         data = await request('/v2/search', { query: query.trim(), limit: Math.min(100, Math.max(1, Number(limit) || 10)), scrapeOptions: { formats: ['markdown'] } });
         addHistory('Search', query.trim());
@@ -116,8 +165,11 @@ function App() {
           data = await request('/v2/map', { url: normalized, limit: Math.min(5000, Math.max(1, Number(limit) || 100)) });
           addHistory('Map', normalized);
         } else {
-          data = await request('/v2/crawl', { url: normalized, limit: Math.min(1000, Math.max(1, Number(limit) || 50)), maxDiscoveryDepth: Math.min(10, Math.max(1, Number(maxDepth) || 2)), scrapeOptions: { formats: ['markdown'], onlyMainContent: onlyMain } });
-          addHistory('Crawl', normalized);
+          const isAudit = activeWorkflow === 'audit';
+          const isHandover = activeWorkflow === 'handover';
+          const pathList = (value) => value.split(/\r?\n/).map((item) => item.trim()).filter(Boolean);
+          data = await request('/v2/crawl', { url: normalized, limit: Math.min(1000, Math.max(1, Number(limit) || 50)), maxDiscoveryDepth: Math.min(10, Math.max(1, Number(maxDepth) || 2)), sitemap: isAudit || isHandover ? sitemap : 'include', ...(includePaths.trim() ? { includePaths: pathList(includePaths) } : {}), ...(excludePaths.trim() ? { excludePaths: pathList(excludePaths) } : {}), maxConcurrency: 1, scrapeOptions: { formats: isAudit ? ['markdown', 'rawHtml', 'links'] : ['markdown', 'links'], onlyMainContent: isHandover ? false : onlyMain } });
+          addHistory(isAudit ? 'Website audit' : isHandover ? 'Client handover' : 'Crawl', normalized);
           setJob(data);
           if (data.id && !['completed', 'failed', 'cancelled'].includes(data.status)) {
             setStatus({ busy: true, message: 'Crawl running · checking for updates every 3 seconds' });
@@ -139,6 +191,12 @@ function App() {
 
   function toggleFormat(value) { setFormats((current) => current.includes(value) ? current.filter((item) => item !== value) : [...current, value]); }
   const crawlActive = mode === 'crawl' && job?.id && !['completed', 'failed', 'cancelled'].includes(job.status);
+  const crawledPages = Array.isArray(result?.data) ? result.data : [];
+  const contacts = useMemo(() => contactCandidates(crawledPages), [result]);
+  const auditRows = useMemo(() => auditFindings(crawledPages), [result]);
+  const handoverHome = crawledPages.find((page) => {
+    try { const current = new URL(urlOf(page)); const target = new URL(url || 'https://invalid.local'); return current.pathname === '/' || current.pathname.replace(/\/$/, '') === target.pathname.replace(/\/$/, ''); } catch { return false; }
+  }) || crawledPages[0];
 
   return <div className="app-shell">
     <header className="topbar">
@@ -147,30 +205,34 @@ function App() {
     </header>
     <main className="workspace">
       <section className="intro"><div><span className="overline">WEB DATA WORKSPACE <i></i> SELF-HOSTED</span><h1>Turn the web into<br/><em>useful data.</em></h1><p>Search, scrape, map, or crawl pages through your private Firecrawl service.</p></div><div className="intro-mark" aria-hidden="true"><div className="hex hex-a"></div><div className="hex hex-b"></div><div className="hex-core"><span>CE</span></div><i className="node node-a"></i><i className="node node-b"></i><i className="node node-c"></i></div></section>
+      <section className="workflow-section"><div className="workflow-heading"><div><span className="panel-step">BUILT FOR YOUR WORK</span><h2>Start with a workflow</h2></div><p>Guided presets for client delivery and business development.</p></div><div className="workflow-grid">{workflows.map((item) => <button key={item.id} className={`workflow-card ${activeWorkflow === item.id ? 'active' : ''}`} onClick={() => { setActiveWorkflow(item.id); setMode(item.id === 'leads' || item.id === 'competitors' ? 'search' : 'crawl'); setResult(null); setJob(null); setStatus({ busy: false, message: '' }); }}><span className="workflow-icon">{item.icon}</span><span className="workflow-tag">{item.tag}</span><b>{item.title}</b><small>{item.text}</small><span className="workflow-arrow">→</span></button>)}</div></section>
       <div className="layout">
         <section className="control-panel">
           <div className="panel-heading"><div><span className="panel-step">01 · CHOOSE AN ACTION</span><h2>What do you need?</h2></div><span className="api-badge">API v2</span></div>
           <div className="mode-grid" role="tablist" aria-label="Firecrawl action">
-            {modes.map((item) => <button key={item.id} className={`mode-card ${mode === item.id ? 'selected' : ''}`} role="tab" aria-selected={mode === item.id} onClick={() => { setMode(item.id); setStatus({ busy: false, message: '' }); setResult(null); setJob(null); }}><span className="mode-icon">{item.icon}</span><span className="mode-title">{item.title}</span><span className="mode-kicker">{item.kicker}</span></button>)}
+            {modes.map((item) => <button key={item.id} className={`mode-card ${mode === item.id && !activeWorkflow ? 'selected' : ''}`} role="tab" aria-selected={mode === item.id && !activeWorkflow} onClick={() => { setActiveWorkflow(''); setMode(item.id); setStatus({ busy: false, message: '' }); setResult(null); setJob(null); }}><span className="mode-icon">{item.icon}</span><span className="mode-title">{item.title}</span><span className="mode-kicker">{item.kicker}</span></button>)}
           </div>
           <form className="request-form" onSubmit={run}>
             <div className="form-title"><div><span className="panel-step">02 · CONFIGURE</span><h3>{selectedMode.title} a {mode === 'search' ? 'query' : 'website'}</h3></div><span className="form-count">{mode === 'search' ? 'FIND' : 'EXTRACT'}</span></div>
-            {mode === 'search' ? <label className="field"><span>Search the web</span><div className="input-wrap"><span className="input-glyph">⌕</span><input autoComplete="off" value={query} onChange={(e) => setQuery(e.target.value)} placeholder="e.g. AI workflow automation tools" /></div></label> : <label className="field"><span>{mode === 'scrape' ? 'Page URL' : mode === 'crawl' ? 'Starting URL' : 'Website URL'}</span><div className="input-wrap"><span className="input-glyph">↗</span><input type="url" autoComplete="url" value={url} onChange={(e) => setUrl(e.target.value)} placeholder="https://example.com" /></div><small>{mode === 'crawl' ? 'Starts here, then follows links within the site.' : mode === 'map' ? 'Find pages published on this domain.' : 'We’ll extract the main readable page content.'}</small></label>}
+            {mode === 'search' && activeWorkflow === 'leads' ? <><label className="field"><span>Business type or service</span><div className="input-wrap"><span className="input-glyph">⌕</span><input autoComplete="off" value={industry} onChange={(e) => setIndustry(e.target.value)} placeholder="e.g. independent dental practices" /></div></label><label className="field"><span>Target area (optional)</span><div className="input-wrap"><span className="input-glyph">⌖</span><input autoComplete="off" value={location} onChange={(e) => setLocation(e.target.value)} placeholder="e.g. Canterbury, UK" /></div></label><p className="mode-copy">Find public business pages. These are web prospects, not verified decision-makers; review each source before outreach.</p></> : mode === 'search' ? <label className="field"><span>{activeWorkflow === 'competitors' ? 'Industry, company or topic' : 'Search the web'}</span><div className="input-wrap"><span className="input-glyph">⌕</span><input autoComplete="off" value={query} onChange={(e) => setQuery(e.target.value)} placeholder={activeWorkflow === 'competitors' ? 'e.g. UK web design agencies' : 'e.g. AI workflow automation tools'} /></div></label> : <label className="field"><span>{activeWorkflow === 'handover' ? 'Client’s current website' : activeWorkflow === 'audit' ? 'Website to audit' : mode === 'scrape' ? 'Page URL' : mode === 'crawl' ? 'Starting URL' : 'Website URL'}</span><div className="input-wrap"><span className="input-glyph">↗</span><input type="url" autoComplete="url" value={url} onChange={(e) => setUrl(e.target.value)} placeholder="https://example.com" /></div><small>{activeWorkflow === 'handover' ? 'Collects page names, available copy and contact candidates with source URLs.' : activeWorkflow === 'audit' ? 'Checks a bounded sample of crawlable pages and reports evidence returned by Firecrawl.' : mode === 'crawl' ? 'Starts here, then follows links within the site.' : mode === 'map' ? 'Find pages published on this domain.' : 'We’ll extract the main readable page content.'}</small></label>}
             <p className="mode-copy">{selectedMode.copy}</p>
             {(mode === 'search' || mode === 'map' || mode === 'crawl') && <label className="field compact-field"><span>{mode === 'search' ? 'Results' : mode === 'map' ? 'Maximum URLs' : 'Maximum pages'}</span><div className="input-wrap short-input"><input type="number" min="1" max={mode === 'map' ? '5000' : mode === 'crawl' ? '1000' : '100'} value={limit} onChange={(e) => setLimit(e.target.value)} /></div></label>}
             {mode === 'crawl' && <label className="field compact-field"><span>Link depth</span><div className="input-wrap short-input"><input type="number" min="1" max="10" value={maxDepth} onChange={(e) => setMaxDepth(e.target.value)} /></div></label>}
             {mode === 'scrape' && <div className="option-block"><div className="option-title">Return content as</div><div className="format-options">{[['markdown','Markdown'],['links','Links'],['html','HTML']].map(([value,label]) => <label key={value} className="check-option"><input type="checkbox" checked={formats.includes(value)} onChange={() => toggleFormat(value)} /><span className="custom-check">✓</span>{label}</label>)}</div><label className="toggle-option"><input type="checkbox" checked={onlyMain} onChange={(e) => setOnlyMain(e.target.checked)} /><span className="toggle-ui"></span><span>Focus on main page content</span></label></div>}
             {mode === 'crawl' && <label className="toggle-option crawl-toggle"><input type="checkbox" checked={onlyMain} onChange={(e) => setOnlyMain(e.target.checked)} /><span className="toggle-ui"></span><span>Focus on main page content</span></label>}
+            {mode === 'crawl' && <div className="advanced-options"><button type="button" className="advanced-toggle" onClick={() => setAdvanced((value) => !value)}>{advanced ? '− Hide' : '+ Show'} crawl options <span>Path filters · sitemap</span></button>{advanced && <div className="advanced-fields"><label className="field"><span>Include paths (optional, one per line)</span><textarea value={includePaths} onChange={(e) => setIncludePaths(e.target.value)} placeholder="/services/\n/about" rows="2" /></label><label className="field"><span>Exclude paths (optional, one per line)</span><textarea value={excludePaths} onChange={(e) => setExcludePaths(e.target.value)} placeholder="/blog/\n/privacy" rows="2" /></label><label className="field"><span>Sitemap handling</span><select value={sitemap} onChange={(e) => setSitemap(e.target.value)}><option value="include">Use sitemap and discovered links</option><option value="only">Use sitemap URLs only</option><option value="skip">Skip sitemap</option></select></label><small>Crawls are limited to one concurrent page request to keep load predictable.</small></div>}</div>}
             <div className="form-bottom"><p><span className="lock">◈</span> Requests stay inside your signed-in Tools session.</p><button className="run-button" disabled={status.busy}>{status.busy ? <><span className="spinner"></span> Working</> : <>{mode === 'scrape' ? 'Scrape page' : mode === 'search' ? 'Search the web' : mode === 'crawl' ? 'Start crawl' : 'Map website'} <span>→</span></>}</button></div>
             {status.message && <div className={`notice ${status.busy ? 'busy' : ''}`} role="status" aria-live="polite"><span className={status.busy ? 'spinner' : 'notice-dot'}></span>{status.message}{crawlActive && <button type="button" onClick={cancelCrawl}>Cancel crawl</button>}</div>}
           </form>
           {history.length > 0 && <div className="recent"><div className="recent-title">RECENT REQUESTS <span>Stored in this browser only</span></div>{history.slice(0,4).map((item) => <button key={item.id} className="recent-item" onClick={() => { if(item.kind==='Search') {setMode('search');setQuery(item.target);} else {setMode(item.kind.toLowerCase());setUrl(item.target);} }}><span className="recent-icon">↺</span><span><b>{item.kind}</b><small>{item.target}</small></span><span className="recent-time">{new Date(item.at).toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'})}</span></button>)}</div>}
         </section>
         <section className="results-panel">
-          <div className="results-header"><div><span className="panel-step">03 · OUTPUT</span><h2>Your results</h2></div><div className="result-actions">{result && <button onClick={() => downloadJson(result, `firecrawl-${mode}`)}>Export JSON <span>↓</span></button>}</div></div>
+          <div className="results-header"><div><span className="panel-step">03 · OUTPUT</span><h2>Your results</h2></div><div className="result-actions">{result && <><button onClick={() => downloadJson(result, `firecrawl-${activeWorkflow || mode}`)}>Export JSON <span>↓</span></button>{activeWorkflow === 'handover' && <button onClick={() => downloadCsv(crawledPages.map((page) => ({ title: titleOf(page), url: urlOf(page), description: page?.metadata?.description || '', page_copy_markdown: page?.markdown || '' })), 'client-page-inventory')}>Page inventory CSV ↓</button>}{activeWorkflow === 'leads' && <button onClick={() => downloadCsv(results.map((item) => ({ company_or_page: titleOf(item), website: urlOf(item), summary: snippetOf(item), source: urlOf(item) })), 'business-prospects')}>Prospects CSV ↓</button>}{activeWorkflow === 'audit' && <button onClick={() => downloadCsv(auditRows, 'website-audit')}>Audit CSV ↓</button>}</>}</div></div>
           {job?.id && <div className="job-banner"><span className={`job-dot ${job.status === 'completed' ? 'done' : ''}`}></span><div><b>{job.status === 'completed' ? 'Crawl completed' : `Crawl ${job.status || 'queued'}`}</b><small>Job {job.id}{job.total ? ` · ${job.completed || 0} of ${job.total} pages` : ''}</small></div><span className="job-state">{job.status}</span></div>}
           {!result && <div className="empty-state"><div className="empty-graphic"><div className="empty-ring ring-one"></div><div className="empty-ring ring-two"></div><span>✳</span><i></i></div><h3>Ready when you are</h3><p>Choose an action, enter a target, and Firecrawl will return structured web data here.</p><div className="endpoint-note"><span className="endpoint-dot"></span><span><b>Private endpoint</b><small>tools.complexelite.com/firecrawl/v2</small></span><span className="arrow">↗</span></div></div>}
           {result && <div className="result-content">
+            {activeWorkflow === 'handover' && <div className="workflow-output"><div className="workflow-output-head"><div><span className="panel-step">CLIENT SITE HANDOVER</span><h3>Business snapshot & page inventory</h3></div><span className="scope-chip">{crawledPages.length} pages collected</span></div><p className="scope-note">Use this as a starting brief for the replacement site. Page copy is available in each result and the page-inventory CSV. Contact details below are pattern-matched candidates and should be confirmed with the client.</p><div className="business-snapshot"><div><small>BUSINESS / SITE NAME</small><b>{handoverHome?.metadata?.ogSiteName || titleOf(handoverHome) || 'Not found in crawl'}</b></div><div><small>HOMEPAGE SUMMARY</small><p>{handoverHome?.metadata?.description || 'No description returned in metadata.'}</p></div><div><small>REFERENCE WEBSITE</small><a href={safeUrl(url) || '#'} target="_blank" rel="noreferrer">{url || '—'} ↗</a></div></div><div className="handover-stats"><div><b>{crawledPages.length}</b><small>Pages captured</small></div><div><b>{new Set(crawledPages.map((page) => { try { return new URL(urlOf(page)).pathname; } catch { return urlOf(page); } })).size}</b><small>Page paths</small></div><div><b>{contacts.length}</b><small>Contact candidates</small></div></div>{contacts.length > 0 && <div className="candidate-list">{contacts.map((item, index) => <div key={`${item.type}-${item.value}-${index}`}><b>{item.type}</b><span>{item.value}</span><a href={safeUrl(item.source) || '#'} target="_blank" rel="noreferrer">Source page ↗</a></div>)}</div>}{contacts.length === 0 && <div className="scope-note">No email or phone candidates were detected in the returned text.</div>}</div>}
+            {activeWorkflow === 'audit' && <div className="workflow-output"><div className="workflow-output-head"><div><span className="panel-step">CRAWL-BASED REVIEW</span><h3>Page-level findings</h3></div><span className="scope-chip">{auditRows.length} pages checked</span></div><p className="scope-note">This checks crawl-visible metadata and extracted Markdown only. It does not measure rankings, traffic, Core Web Vitals, security or accessibility.</p><div className="audit-table-wrap"><table className="audit-table"><thead><tr><th>Page</th><th>Title</th><th>Description</th><th>Findings</th></tr></thead><tbody>{auditRows.map((row, index) => <tr key={`${row.url}-${index}`}><td><a href={safeUrl(row.url) || '#'} target="_blank" rel="noreferrer">{row.url || `Page ${index + 1}`}</a></td><td>{row.title}</td><td>{row.description}</td><td>{row.findings.length ? row.findings.join(' · ') : 'No basic metadata or H1 gaps detected'}</td></tr>)}</tbody></table></div></div>}
             <div className="result-summary"><span className="success-icon">✓</span><div><b>{mode === 'scrape' ? titleOf(result.data) : `${results.length} ${mode === 'map' ? 'URLs' : 'results'} returned`}</b><small>{mode === 'scrape' ? urlOf(result.data) : `Completed · ${new Date().toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'})}`}</small></div><button className="icon-button" title="Copy JSON" onClick={() => navigator.clipboard?.writeText(JSON.stringify(result, null, 2)).catch(()=>{})}>⧉</button></div>
             {results.length > 0 && <div className="results-list"><div className="list-toolbar"><span>{results.length} {mode === 'map' ? 'pages discovered' : 'web results'}</span><div className="filter-input"><span>⌕</span><input value={resultFilter} onChange={(e) => setResultFilter(e.target.value)} placeholder="Filter results" /></div></div>{results.slice(0, 100).map((item, index) => <article className="result-item" key={`${urlOf(item)}-${index}`}><span className="result-index">{String(index + 1).padStart(2, '0')}</span><div className="result-copy"><b>{titleOf(item)}</b>{urlOf(item) && <a href={safeUrl(urlOf(item)) || '#'} target="_blank" rel="noreferrer">{urlOf(item)} ↗</a>}{snippetOf(item) && <p>{String(snippetOf(item)).slice(0, 300)}</p>}</div></article>)}</div>}
             {mode === 'scrape' && <div className="scrape-output">{result.data?.markdown && <Output title="Markdown" text={result.data.markdown} />}{result.data?.links && <Output title="Links" text={JSON.stringify(result.data.links, null, 2)} />}{result.data?.html && <Output title="HTML source" text={result.data.html} />}{!result.data?.markdown && !result.data?.links && !result.data?.html && <Output title="Response" text={JSON.stringify(result, null, 2)} />}</div>}
