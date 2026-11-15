@@ -166,7 +166,12 @@ services:
     hostname: firecrawl-rabbitmq
     environment:
       RABBITMQ_NODENAME: rabbit@firecrawl-rabbitmq
-      RABBITMQ_ERLANG_COOKIE: ${FIRECRAWL_RABBITMQ_COOKIE:?required}
+    secrets:
+      - source: firecrawl-erlang-cookie-v1
+        target: /var/lib/rabbitmq/.erlang.cookie
+        uid: "999"
+        gid: "999"
+        mode: 0400
     networks:
       firecrawl-private:
         aliases: [firecrawl-rabbitmq]
@@ -261,6 +266,10 @@ networks:
     internal: true
   firecrawl-egress:
     driver: overlay
+
+secrets:
+  firecrawl-erlang-cookie-v1:
+    external: true
 
 volumes:
   openreply-db:
