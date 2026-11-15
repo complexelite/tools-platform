@@ -118,9 +118,135 @@ services:
       restart_policy:
         condition: on-failure
 
+  firecrawl-postgres:
+    image: ghcr.io/firecrawl/nuq-postgres@sha256:d719b36160eac2fcbe16dc7e7360ddb9c82c40ea5da183d07bf4a755c6a0b2ae
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: ${FIRECRAWL_POSTGRES_PASSWORD:?required}
+      POSTGRES_DB: postgres
+    volumes:
+      - firecrawl-postgres:/var/lib/postgresql/data
+    networks: [firecrawl-private]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d postgres"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    deploy:
+      replicas: 1
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: 768M
+      restart_policy:
+        condition: on-failure
+
+  firecrawl-redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--bind", "0.0.0.0", "--appendonly", "yes"]
+    volumes:
+      - firecrawl-redis:/data
+    networks: [firecrawl-private]
+    deploy:
+      replicas: 1
+      resources:
+        limits:
+          cpus: "0.15"
+          memory: 256M
+      restart_policy:
+        condition: on-failure
+
+  firecrawl-rabbitmq:
+    image: rabbitmq:3-management
+    volumes:
+      - firecrawl-rabbitmq:/var/lib/rabbitmq
+    networks: [firecrawl-private]
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "check_running"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+    deploy:
+      replicas: 1
+      resources:
+        limits:
+          cpus: "0.15"
+          memory: 512M
+      restart_policy:
+        condition: on-failure
+
+  firecrawl-playwright:
+    image: ghcr.io/firecrawl/playwright-service@sha256:227ce3d8059173925a5a0697c63a1e947662cca934a609151651f578774edd5d
+    environment:
+      PORT: "3000"
+      MAX_CONCURRENT_PAGES: "1"
+    networks: [firecrawl-private]
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    tmpfs:
+      - /tmp/.cache:noexec,nosuid,size=768m
+    deploy:
+      replicas: 1
+      resources:
+        limits:
+          cpus: "1.25"
+          memory: 2560M
+      restart_policy:
+        condition: on-failure
+
+  firecrawl-api:
+    image: ghcr.io/firecrawl/firecrawl@sha256:1b223ef18d410f67615f32ccaa3dcedfc26af4286f096247bddca3b624545e63
+    command: ["node", "dist/src/harness.js", "--start-docker"]
+    environment:
+      HOST: 0.0.0.0
+      PORT: "3002"
+      EXTRACT_WORKER_PORT: "3004"
+      WORKER_PORT: "3005"
+      ENV: local
+      REDIS_URL: redis://firecrawl-redis:6379
+      REDIS_RATE_LIMIT_URL: redis://firecrawl-redis:6379
+      PLAYWRIGHT_MICROSERVICE_URL: http://firecrawl-playwright:3000/scrape
+      NUQ_RABBITMQ_URL: amqp://firecrawl-rabbitmq:5672
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: ${FIRECRAWL_POSTGRES_PASSWORD:?required}
+      POSTGRES_DB: postgres
+      POSTGRES_HOST: firecrawl-postgres
+      POSTGRES_PORT: "5432"
+      USE_DB_AUTHENTICATION: "false"
+      NUM_WORKERS_PER_QUEUE: "1"
+      CRAWL_CONCURRENT_REQUESTS: "1"
+      MAX_CONCURRENT_JOBS: "1"
+      BROWSER_POOL_SIZE: "1"
+      HARNESS_STARTUP_TIMEOUT_MS: "60000"
+    networks:
+      firecrawl-private: {}
+      dokploy-network:
+        aliases: [tools-firecrawl-api]
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3002/v0/health/readiness').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 20s
+      timeout: 5s
+      retries: 5
+      start_period: 90s
+    deploy:
+      replicas: 1
+      resources:
+        limits:
+          cpus: "1.75"
+          memory: 3G
+      restart_policy:
+        condition: on-failure
+
 networks:
   dokploy-network:
     external: true
+  firecrawl-private:
+    driver: overlay
+    internal: true
 
 volumes:
   openreply-db:
@@ -129,3 +255,9 @@ volumes:
     name: tools_openreply-redis
   maps-data:
     name: tools_maps-data
+  firecrawl-postgres:
+    name: tools_firecrawl-postgres
+  firecrawl-redis:
+    name: tools_firecrawl-redis
+  firecrawl-rabbitmq:
+    name: tools_firecrawl-rabbitmq
