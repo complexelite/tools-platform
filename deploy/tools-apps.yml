@@ -231,6 +231,7 @@ services:
       POSTGRES_HOST: firecrawl-postgres
       POSTGRES_PORT: "5432"
       USE_DB_AUTHENTICATION: "false"
+      NUQ_WORKER_COUNT: "1"
       NUM_WORKERS_PER_QUEUE: "1"
       CRAWL_CONCURRENT_REQUESTS: "1"
       MAX_CONCURRENT_JOBS: "1"
@@ -252,7 +253,7 @@ services:
       resources:
         limits:
           cpus: "1.75"
-          memory: 3G
+          memory: 4G
       restart_policy:
         condition: on-failure
 
