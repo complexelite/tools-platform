@@ -163,6 +163,10 @@ services:
 
   firecrawl-rabbitmq:
     image: rabbitmq:3-management
+    hostname: firecrawl-rabbitmq
+    environment:
+      RABBITMQ_NODENAME: rabbit@firecrawl-rabbitmq
+      RABBITMQ_ERLANG_COOKIE: ${FIRECRAWL_RABBITMQ_COOKIE:?required}
     networks:
       firecrawl-private:
         aliases: [firecrawl-rabbitmq]
@@ -171,7 +175,7 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
-      start_period: 15s
+      start_period: 60s
     deploy:
       replicas: 1
       resources:
