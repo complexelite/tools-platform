@@ -80,6 +80,7 @@ function App() {
   const [health, setHealth] = useState('checking');
   const [result, setResult] = useState(null);
   const [job, setJob] = useState(null);
+  const [pollAttempt, setPollAttempt] = useState(0);
   const [resultFilter, setResultFilter] = useState('');
   const [savedCrawls, setSavedCrawls] = useState([]);
   const [storageStatus, setStorageStatus] = useState('checking');
@@ -135,11 +136,19 @@ function App() {
 
   useEffect(() => {
     if (!job?.id || ['completed', 'failed', 'cancelled'].includes(job.status)) return undefined;
-    const timer = window.setInterval(async () => {
+    let alive = true;
+    let timer;
+    let consecutiveFailures = 0;
+    const poll = async () => {
+      if (!alive) return;
+      const controller = new AbortController();
+      const timeout = window.setTimeout(() => controller.abort(), 12000);
       try {
-        const response = await fetch(`${apiBase}/v2/crawl/${encodeURIComponent(job.id)}`, { credentials: 'same-origin' });
+        const response = await fetch(`${apiBase}/v2/crawl/${encodeURIComponent(job.id)}`, { credentials: 'same-origin', signal: controller.signal });
         const data = await response.json();
         if (!response.ok) throw new Error(data.error || 'Could not read crawl status.');
+        consecutiveFailures = 0;
+        if (!alive) return;
         setJob(data);
         if (['completed', 'failed', 'cancelled'].includes(data.status)) {
           if (data.status === 'completed') {
@@ -161,11 +170,28 @@ function App() {
           } else {
             setResult(data); setStatus({ busy: false, message: `Crawl ${data.status}` });
           }
+          return;
         }
-      } catch (error) { setStatus({ busy: true, message: error.message }); }
-    }, 3000);
-    return () => window.clearInterval(timer);
-  }, [job?.id, job?.status]);
+        const total = Number(data.total) || 0;
+        const completed = Number(data.completed) || 0;
+        const progress = total > 0 ? `${completed} of ${total} pages complete` : 'Discovering pages';
+        setStatus({ busy: true, message: `Crawl in progress · ${progress} · checked just now` });
+      } catch (error) {
+        if (!alive) return;
+        consecutiveFailures += 1;
+        if (consecutiveFailures >= 4) {
+          setStatus({ busy: false, message: 'Status checks are not reaching Firecrawl. The crawl may still be running; retry the status check or cancel it.' });
+          return;
+        }
+        setStatus({ busy: true, message: `Checking crawl status · retry ${consecutiveFailures} of 4${error.name === 'AbortError' ? ' (request timed out)' : ''}` });
+      } finally {
+        window.clearTimeout(timeout);
+      }
+      if (alive) timer = window.setTimeout(poll, 3000);
+    };
+    timer = window.setTimeout(poll, 0);
+    return () => { alive = false; window.clearTimeout(timer); };
+  }, [job?.id, job?.status, pollAttempt]);
 
   function addHistory(kind, value) {
     const entry = { id: `${Date.now()}`, kind, target: value, at: new Date().toISOString() };
@@ -311,8 +337,8 @@ function App() {
             {mode === 'scrape' && <div className="option-block"><div className="option-title">Return content as</div><div className="format-options">{[['markdown','Markdown'],['links','Links'],['html','HTML']].map(([value,label]) => <label key={value} className="check-option"><input type="checkbox" checked={formats.includes(value)} onChange={() => toggleFormat(value)} /><span className="custom-check">✓</span>{label}</label>)}</div><label className="toggle-option"><input type="checkbox" checked={onlyMain} onChange={(e) => setOnlyMain(e.target.checked)} /><span className="toggle-ui"></span><span>Focus on main page content</span></label></div>}
             {mode === 'crawl' && <label className="toggle-option crawl-toggle"><input type="checkbox" checked={onlyMain} onChange={(e) => setOnlyMain(e.target.checked)} /><span className="toggle-ui"></span><span>Focus on main page content</span></label>}
             {mode === 'crawl' && <div className="advanced-options"><button type="button" className="advanced-toggle" onClick={() => setAdvanced((value) => !value)}>{advanced ? '− Hide' : '+ Show'} crawl options <span>Path filters · sitemap</span></button>{advanced && <div className="advanced-fields"><label className="field"><span>Include paths (optional, one per line)</span><textarea value={includePaths} onChange={(e) => setIncludePaths(e.target.value)} placeholder="/services/\n/about" rows="2" /></label><label className="field"><span>Exclude paths (optional, one per line)</span><textarea value={excludePaths} onChange={(e) => setExcludePaths(e.target.value)} placeholder="/blog/\n/privacy" rows="2" /></label><label className="field"><span>Sitemap handling</span><select value={sitemap} onChange={(e) => setSitemap(e.target.value)}><option value="include">Use sitemap and discovered links</option><option value="only">Use sitemap URLs only</option><option value="skip">Skip sitemap</option></select></label><small>Crawls are limited to one concurrent page request to keep load predictable.</small></div>}</div>}
-            <div className="form-bottom"><p><span className="lock">◈</span> Requests stay inside your signed-in Tools session.</p><button className="run-button" disabled={status.busy}>{status.busy ? <><span className="spinner"></span> Working</> : <>{mode === 'scrape' ? 'Scrape page' : mode === 'search' ? 'Search the web' : mode === 'crawl' ? 'Start crawl' : 'Map website'} <span>→</span></>}</button></div>
-            {status.message && <div className={`notice ${status.busy ? 'busy' : ''}`} role="status" aria-live="polite"><span className={status.busy ? 'spinner' : 'notice-dot'}></span>{status.message}{crawlActive && <button type="button" onClick={cancelCrawl}>Cancel crawl</button>}</div>}
+            <div className="form-bottom"><p><span className="lock">◈</span> Requests stay inside your signed-in Tools session.</p><button className="run-button" disabled={status.busy || crawlActive}>{status.busy ? <><span className="spinner"></span> Working</> : crawlActive ? 'Crawl active' : <>{mode === 'scrape' ? 'Scrape page' : mode === 'search' ? 'Search the web' : mode === 'crawl' ? 'Start crawl' : 'Map website'} <span>→</span></>}</button></div>
+            {status.message && <div className={`notice ${status.busy ? 'busy' : ''}`} role="status" aria-live="polite"><span className={status.busy ? 'spinner' : 'notice-dot'}></span>{status.message}{crawlActive && !status.busy && <button type="button" onClick={() => { setStatus({ busy: true, message: 'Checking crawl status…' }); setPollAttempt((value) => value + 1); }}>Check status</button>}{crawlActive && <button type="button" onClick={cancelCrawl}>Cancel crawl</button>}</div>}
           </form>
           <div className="saved-crawls"><div className="recent-title">SAVED CRAWLS <span className={storageStatus}>{storageStatus === 'connected' ? 'Dokploy database connected' : storageStatus === 'checking' ? 'Connecting…' : 'Database unavailable'}</span></div>{savedCrawls.length === 0 ? <p className="saved-empty">{storageStatus === 'connected' ? 'Your crawl appears here as soon as Firecrawl accepts it.' : storageStatus === 'unavailable' ? 'Crawl history could not connect to storage.' : 'Loading saved crawl history…'}</p> : savedCrawls.slice(0,8).map((item) => <button key={item.id} className="recent-item saved-crawl-item" onClick={() => openSavedCrawl(item.id)}><span className="recent-icon">↺</span><span><b>{item.workflow === 'handover' ? 'Client handover' : item.workflow === 'audit' ? 'Website audit' : 'Crawl'} · {item.status === 'completed' ? `${item.page_count} pages${item.truncated ? ' · capped' : ''}` : item.status}</b><small>{item.target}</small></span><span className="recent-time">{new Date(item.created_at).toLocaleDateString()}</span></button>)}</div>
           {history.length > 0 && <div className="recent"><div className="recent-title">RECENT REQUESTS <span>Stored in this browser only</span></div>{history.slice(0,4).map((item) => <button key={item.id} className="recent-item" onClick={() => { if(item.kind==='Search') {setActiveWorkflow('');setMode('search');setQuery(item.target);} else {setActiveWorkflow('');setMode(item.kind.toLowerCase());setUrl(item.target);} }}><span className="recent-icon">↺</span><span><b>{item.kind}</b><small>{item.target}</small></span><span className="recent-time">{new Date(item.at).toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'})}</span></button>)}</div>}
