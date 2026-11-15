@@ -144,6 +144,32 @@ services:
       restart_policy:
         condition: on-failure
 
+  firecrawl-workspace-db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: firecrawl_workspace
+      POSTGRES_USER: firecrawl_app
+      POSTGRES_PASSWORD: ${FIRECRAWL_WORKSPACE_DB_PASSWORD:?required}
+    volumes:
+      - firecrawl-workspace-postgres:/var/lib/postgresql/data
+    networks:
+      dokploy-network:
+        aliases: [tools-firecrawl-workspace-db]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U firecrawl_app -d firecrawl_workspace"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+    deploy:
+      replicas: 1
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: 768M
+      restart_policy:
+        condition: on-failure
+
   firecrawl-redis:
     image: redis:7-alpine
     command: ["redis-server", "--bind", "0.0.0.0", "--appendonly", "yes"]
@@ -279,5 +305,7 @@ volumes:
     name: tools_maps-data
   firecrawl-postgres:
     name: tools_firecrawl-postgres
+  firecrawl-workspace-postgres:
+    name: tools_firecrawl-workspace-postgres
   firecrawl-redis:
     name: tools_firecrawl-redis

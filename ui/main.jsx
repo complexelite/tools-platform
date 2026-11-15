@@ -81,6 +81,8 @@ function App() {
   const [result, setResult] = useState(null);
   const [job, setJob] = useState(null);
   const [resultFilter, setResultFilter] = useState('');
+  const [savedCrawls, setSavedCrawls] = useState([]);
+  const [storageStatus, setStorageStatus] = useState('checking');
   const [history, setHistory] = useState(() => {
     try { return JSON.parse(localStorage.getItem(historyKey) || '[]'); } catch { return []; }
   });
@@ -110,6 +112,18 @@ function App() {
   }, []);
 
   useEffect(() => {
+    let alive = true;
+    fetch('/api/firecrawl/crawls', { credentials: 'same-origin' })
+      .then(async (response) => {
+        const data = await response.json().catch(() => ({}));
+        if (!response.ok) throw new Error(data.error || 'Storage is unavailable.');
+        if (alive) { setSavedCrawls(data.crawls || []); setStorageStatus('connected'); }
+      })
+      .catch(() => { if (alive) setStorageStatus('unavailable'); });
+    return () => { alive = false; };
+  }, []);
+
+  useEffect(() => {
     if (!job?.id || ['completed', 'failed', 'cancelled'].includes(job.status)) return undefined;
     const timer = window.setInterval(async () => {
       try {
@@ -123,7 +137,10 @@ function App() {
             try {
               const complete = await collectCrawlPages(data);
               setJob(complete); setResult(complete);
-              setStatus({ busy: false, message: `${complete.data.length} crawl result${complete.data.length === 1 ? '' : 's'} loaded` });
+              try {
+                await saveCrawl(complete, url, activeWorkflow || 'crawl');
+                setStatus({ busy: false, message: `${complete.data.length} crawl result${complete.data.length === 1 ? '' : 's'} loaded and saved` });
+              } catch (saveError) { setStatus({ busy: false, message: `${complete.data.length} results loaded, but could not save crawl history: ${saveError.message}` }); }
             } catch (error) {
               setResult(data); setStatus({ busy: false, message: `Crawl completed, but some result pages could not be loaded: ${error.message}` });
             }
@@ -153,18 +170,38 @@ function App() {
   }
 
   async function collectCrawlPages(initial) {
+    const crawlId = initial?.id;
     let page = initial;
     const collected = [];
     let pagesRead = 0;
     while (page && pagesRead < 200) {
       if (Array.isArray(page.data)) collected.push(...page.data);
       pagesRead += 1;
-      if (!page.next) return { ...page, data: collected, next: null };
+      if (!page.next) return { ...initial, ...page, id: crawlId || page.id, data: collected, next: null };
       const nextUrl = new URL(page.next, window.location.origin);
       if (!/^\/v2\/crawl\/[a-f\d-]+$/i.test(nextUrl.pathname)) throw new Error('Firecrawl returned an invalid crawl results cursor.');
       page = await request(`${nextUrl.pathname}${nextUrl.search}`);
     }
-    return { ...page, data: collected, next: page?.next || null };
+    return { ...initial, ...page, id: crawlId || page?.id, data: collected, next: page?.next || null };
+  }
+
+  async function saveCrawl(crawl, target, workflow) {
+    const response = await fetch('/api/firecrawl/crawls', { method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ job_id: crawl.id, target, workflow, total: crawl.total, completed: crawl.completed, pages: (crawl.data || []).map((page) => ({ url: page?.url, metadata: page?.metadata, markdown: page?.markdown, links: page?.links })) }) });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(data.error || 'Database save failed.');
+    setSavedCrawls((current) => [data.crawl, ...current.filter((item) => item.job_id !== data.crawl.job_id)].slice(0, 50));
+    setStorageStatus('connected');
+    return data.crawl;
+  }
+
+  async function openSavedCrawl(id) {
+    try {
+      const response = await fetch(`/api/firecrawl/crawls/${encodeURIComponent(id)}`, { credentials: 'same-origin' });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(data.error || 'Could not open saved crawl.');
+      const item = data.crawl;
+      setUrl(item.target); setMode('crawl'); setActiveWorkflow(item.workflow === 'crawl' ? '' : item.workflow); setJob({ id: item.job_id, status: item.status, total: item.total, completed: item.completed }); setResult(item.result); setResultFilter(''); setStatus({ busy: false, message: `${item.page_count} saved results loaded from the database` });
+    } catch (error) { setStatus({ busy: false, message: error.message }); }
   }
 
   async function run(event) {
@@ -200,6 +237,13 @@ function App() {
           setJob(data);
           if (data.id && !['completed', 'failed', 'cancelled'].includes(data.status)) {
             setStatus({ busy: true, message: 'Crawl running · checking for updates every 3 seconds' });
+            return;
+          }
+          if (data.id && data.status === 'completed') {
+            const complete = await collectCrawlPages(data);
+            setJob(complete); setResult(complete);
+            try { await saveCrawl(complete, normalized, activeWorkflow || 'crawl'); setStatus({ busy: false, message: `${complete.data.length} crawl result${complete.data.length === 1 ? '' : 's'} loaded and saved` }); }
+            catch (saveError) { setStatus({ busy: false, message: `${complete.data.length} results loaded, but could not save crawl history: ${saveError.message}` }); }
             return;
           }
         }
@@ -251,7 +295,8 @@ function App() {
             <div className="form-bottom"><p><span className="lock">◈</span> Requests stay inside your signed-in Tools session.</p><button className="run-button" disabled={status.busy}>{status.busy ? <><span className="spinner"></span> Working</> : <>{mode === 'scrape' ? 'Scrape page' : mode === 'search' ? 'Search the web' : mode === 'crawl' ? 'Start crawl' : 'Map website'} <span>→</span></>}</button></div>
             {status.message && <div className={`notice ${status.busy ? 'busy' : ''}`} role="status" aria-live="polite"><span className={status.busy ? 'spinner' : 'notice-dot'}></span>{status.message}{crawlActive && <button type="button" onClick={cancelCrawl}>Cancel crawl</button>}</div>}
           </form>
-          {history.length > 0 && <div className="recent"><div className="recent-title">RECENT REQUESTS <span>Stored in this browser only</span></div>{history.slice(0,4).map((item) => <button key={item.id} className="recent-item" onClick={() => { if(item.kind==='Search') {setMode('search');setQuery(item.target);} else {setMode(item.kind.toLowerCase());setUrl(item.target);} }}><span className="recent-icon">↺</span><span><b>{item.kind}</b><small>{item.target}</small></span><span className="recent-time">{new Date(item.at).toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'})}</span></button>)}</div>}
+          <div className="saved-crawls"><div className="recent-title">SAVED CRAWLS <span className={storageStatus}>{storageStatus === 'connected' ? 'Dokploy database connected' : storageStatus === 'checking' ? 'Connecting…' : 'Database unavailable'}</span></div>{savedCrawls.length === 0 ? <p className="saved-empty">{storageStatus === 'connected' ? 'Completed crawls will be saved here for this Perfex user.' : storageStatus === 'unavailable' ? 'Crawl history could not connect to storage.' : 'Loading saved crawl history…'}</p> : savedCrawls.slice(0,8).map((item) => <button key={item.id} className="recent-item saved-crawl-item" onClick={() => openSavedCrawl(item.id)}><span className="recent-icon">↺</span><span><b>{item.workflow === 'handover' ? 'Client handover' : item.workflow === 'audit' ? 'Website audit' : 'Crawl'} · {item.page_count} pages</b><small>{item.target}</small></span><span className="recent-time">{new Date(item.created_at).toLocaleDateString()}</span></button>)}</div>
+          {history.length > 0 && <div className="recent"><div className="recent-title">RECENT REQUESTS <span>Stored in this browser only</span></div>{history.slice(0,4).map((item) => <button key={item.id} className="recent-item" onClick={() => { if(item.kind==='Search') {setActiveWorkflow('');setMode('search');setQuery(item.target);} else {setActiveWorkflow('');setMode(item.kind.toLowerCase());setUrl(item.target);} }}><span className="recent-icon">↺</span><span><b>{item.kind}</b><small>{item.target}</small></span><span className="recent-time">{new Date(item.at).toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'})}</span></button>)}</div>}
         </section>
         <section className="results-panel">
           <div className="results-header"><div><span className="panel-step">03 · OUTPUT</span><h2>Your results</h2></div><div className="result-actions">{result && <><button onClick={() => downloadJson(result, `firecrawl-${activeWorkflow || mode}`)}>Export JSON <span>↓</span></button>{activeWorkflow === 'handover' && <><button onClick={() => downloadCsv(crawledPages.map((page) => ({ title: titleOf(page), url: urlOf(page), description: page?.metadata?.description || '', page_copy_markdown: page?.markdown || '' })), 'client-page-inventory')}>Page inventory CSV ↓</button><button onClick={() => downloadCsv(contacts, 'contact-candidates')}>Contacts CSV ↓</button></>}{activeWorkflow === 'leads' && <button onClick={() => downloadCsv(results.map((item) => ({ company_or_page: titleOf(item), website: urlOf(item), summary: snippetOf(item), source: urlOf(item) })), 'business-prospects')}>Prospects CSV ↓</button>}{activeWorkflow === 'audit' && <button onClick={() => downloadCsv(auditRows, 'website-audit')}>Audit CSV ↓</button>}</>}</div></div>

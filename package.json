@@ -1,6 +1,6 @@
 {
   "name": "complex-elite-tools-platform",
-  "version": "1.0.37",
+  "version": "1.0.38",
   "private": true,
   "type": "module",
   "engines": {
@@ -12,6 +12,7 @@
   },
   "dependencies": {
     "hyperframes": "0.8.226",
+    "pg": "^8.16.3",
     "react": "^19.2.0",
     "react-dom": "^19.2.0"
   },

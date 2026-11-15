@@ -8,6 +8,7 @@ import os from 'node:os';
 import {createWriteStream,createReadStream} from 'node:fs';
 import {Transform} from 'node:stream';
 import {StringDecoder} from 'node:string_decoder';
+import {Pool} from 'pg';
 import {legacyGoogleMapsPath} from './google-maps-routes.mjs';
 
 const execFileAsync = promisify(execFile);
@@ -16,6 +17,7 @@ const loginUrl = 'https://clients.complexelite.com/studio/login?app=tools';
 const exchangeUrl = process.env.PERFEX_SSO_EXCHANGE_URL || 'https://clients.complexelite.com/studio/sso/exchange';
 const secret = process.env.STUDIO_SSO_SECRET || '';
 const apiSecret = process.env.TOOLS_API_SECRET || '';
+const firecrawlWorkspaceDb = process.env.FIRECRAWL_WORKSPACE_DATABASE_URL ? new Pool({connectionString:process.env.FIRECRAWL_WORKSPACE_DATABASE_URL,max:4,connectionTimeoutMillis:5000,idleTimeoutMillis:30000,application_name:'complex-elite-firecrawl-workspace'}) : null;
 const cookieName = 'ce_tools_session';
 const stateName = 'ce_tools_state';
 const nextName = 'ce_tools_next';
@@ -53,6 +55,39 @@ function send(res,status,body,type='text/plain; charset=utf-8',headers={}) {
 }
 function cookies(req) { return Object.fromEntries((req.headers.cookie||'').split(';').map(x=>x.trim().split(/=(.*)/s).slice(0,2)).filter(([k,v])=>k&&v!==undefined)); }
 function session(req) { const token=cookies(req)[cookieName], value=sessions.get(token); if(!value||value.expires<=Date.now()){sessions.delete(token);return null;} return {token,...value}; }
+function sameOriginRequest(req) {
+ const site=String(req.headers['sec-fetch-site']||'').toLowerCase();
+ if(site&&site!=='same-origin'&&site!=='none')return false;
+ if(!req.headers.origin)return req.method==='GET';
+ try{return new URL(req.headers.origin).host===(req.headers.host||'');}catch{return false;}
+}
+async function readJsonBody(req,maxBytes=64*1024*1024) {
+ const chunks=[];let size=0;
+ for await(const chunk of req){size+=chunk.length;if(size>maxBytes){req.resume();throw Object.assign(new Error('Crawl results exceed the 64 MB storage limit.'),{statusCode:413});}chunks.push(chunk);}
+ try{return JSON.parse(Buffer.concat(chunks).toString('utf8'));}catch{throw Object.assign(new Error('Request body must be valid JSON.'),{statusCode:400});}
+}
+async function initializeFirecrawlWorkspaceDb() {
+ if(!firecrawlWorkspaceDb)return;
+ await firecrawlWorkspaceDb.query(`
+  CREATE TABLE IF NOT EXISTS firecrawl_saved_crawls (
+   id BIGSERIAL PRIMARY KEY,
+   user_id BIGINT NOT NULL,
+   firecrawl_job_id TEXT NOT NULL,
+   workflow TEXT NOT NULL DEFAULT 'crawl',
+   target TEXT NOT NULL,
+   status TEXT NOT NULL DEFAULT 'completed',
+   total INTEGER NOT NULL DEFAULT 0,
+   completed INTEGER NOT NULL DEFAULT 0,
+   page_count INTEGER NOT NULL DEFAULT 0,
+   result JSONB NOT NULL,
+   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+   updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+   UNIQUE (user_id, firecrawl_job_id)
+  );
+  CREATE INDEX IF NOT EXISTS firecrawl_saved_crawls_user_recent_idx ON firecrawl_saved_crawls(user_id, created_at DESC);
+ `);
+}
+function firecrawlWorkspaceResponse(res,status,body) { return send(res,status,JSON.stringify(body),'application/json; charset=utf-8'); }
 function cookie(name,value,age) {return `${name}=${value}; Path=/; Max-Age=${age}; HttpOnly; Secure; SameSite=Lax`}
 function esc(x) { return String(x).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
 function page(slug,user,status) {
@@ -203,6 +238,43 @@ function authenticatedApi(req) {
 async function handle(req,res) {
  const url=new URL(req.url||'/', 'http://tools.internal'), path=url.pathname;
  if(path==='/healthz'&&req.method==='GET') return send(res,200,'ok');
+ if((path==='/api/firecrawl/crawls'||/^\/api\/firecrawl\/crawls\/\d+$/.test(path))&&(req.method==='GET'||(path==='/api/firecrawl/crawls'&&req.method==='POST'))) {
+  const s=session(req);if(!s)return firecrawlWorkspaceResponse(res,401,{error:'Perfex staff sign-in is required.'});
+  if(!sameOriginRequest(req)){req.resume();return firecrawlWorkspaceResponse(res,403,{error:'Cross-origin request refused.'});}
+  if(!firecrawlWorkspaceDb)return firecrawlWorkspaceResponse(res,503,{error:'Firecrawl result storage is not configured.'});
+  try {
+   if(req.method==='GET'&&path==='/api/firecrawl/crawls') {
+    const rows=await firecrawlWorkspaceDb.query('SELECT id,firecrawl_job_id AS job_id,workflow,target,status,total,completed,page_count,created_at FROM firecrawl_saved_crawls WHERE user_id=$1 ORDER BY created_at DESC LIMIT 50',[s.user.id]);
+    return firecrawlWorkspaceResponse(res,200,{crawls:rows.rows});
+   }
+   const detail=path.match(/^\/api\/firecrawl\/crawls\/(\d+)$/);
+   if(req.method==='GET'&&detail) {
+    const found=await firecrawlWorkspaceDb.query('SELECT id,firecrawl_job_id AS job_id,workflow,target,status,total,completed,page_count,result,created_at FROM firecrawl_saved_crawls WHERE id=$1 AND user_id=$2',[detail[1],s.user.id]);
+    if(!found.rowCount)return firecrawlWorkspaceResponse(res,404,{error:'Saved crawl not found.'});
+    return firecrawlWorkspaceResponse(res,200,{crawl:found.rows[0]});
+   }
+   const declared=Number(req.headers['content-length']||0);if(declared>64*1024*1024){req.resume();return firecrawlWorkspaceResponse(res,413,{error:'Crawl results exceed the 64 MB storage limit.'});}
+   const body=await readJsonBody(req);
+   const jobId=String(body.job_id||'').trim(),target=String(body.target||'').trim(),workflow=String(body.workflow||'crawl');
+   let parsedTarget;try{parsedTarget=new URL(target);}catch{}
+   if(!jobId||jobId.length>120||!parsedTarget||!['http:','https:'].includes(parsedTarget.protocol))return firecrawlWorkspaceResponse(res,400,{error:'A Firecrawl job ID and valid HTTP(S) target are required.'});
+   if(!['crawl','handover','audit'].includes(workflow))return firecrawlWorkspaceResponse(res,400,{error:'Unsupported crawl workflow.'});
+   const pages=Array.isArray(body.pages)?body.pages.slice(0,1000).map((page)=>({
+    url:String(page?.url||page?.metadata?.sourceURL||'').slice(0,2048),
+    metadata:page?.metadata&&typeof page.metadata==='object'?page.metadata:{},
+    markdown:String(page?.markdown||'').slice(0,2_000_000),
+    links:Array.isArray(page?.links)?page.links.slice(0,2000):[],
+   })):[];
+   const total=Math.max(0,Math.min(100000,Number(body.total)||pages.length)),completed=Math.max(0,Math.min(100000,Number(body.completed)||pages.length));
+   const result={status:'completed',total,completed,data:pages};
+   const saved=await firecrawlWorkspaceDb.query(`INSERT INTO firecrawl_saved_crawls(user_id,firecrawl_job_id,workflow,target,status,total,completed,page_count,result,created_at,updated_at)
+    VALUES($1,$2,$3,$4,'completed',$5,$6,$7,$8::jsonb,NOW(),NOW())
+    ON CONFLICT(user_id,firecrawl_job_id) DO UPDATE SET workflow=EXCLUDED.workflow,target=EXCLUDED.target,status=EXCLUDED.status,total=EXCLUDED.total,completed=EXCLUDED.completed,page_count=EXCLUDED.page_count,result=EXCLUDED.result,updated_at=NOW()
+    RETURNING id,firecrawl_job_id AS job_id,workflow,target,status,total,completed,page_count,created_at`,[s.user.id,jobId,workflow,parsedTarget.toString(),total,completed,pages.length,JSON.stringify(result)]);
+   await firecrawlWorkspaceDb.query(`DELETE FROM firecrawl_saved_crawls WHERE user_id=$1 AND id IN (SELECT id FROM firecrawl_saved_crawls WHERE user_id=$1 ORDER BY created_at DESC OFFSET 100)`,[s.user.id]);
+   return firecrawlWorkspaceResponse(res,201,{crawl:saved.rows[0]});
+  } catch(error) {return firecrawlWorkspaceResponse(res,error.statusCode||500,{error:error.statusCode?error.message:'Could not access Firecrawl crawl storage.'});}
+ }
  if(path==='/login'&&req.method==='GET') {const requested=url.searchParams.get('next')||'/',next=pages.has(requested)?requested:'/';if(session(req))return send(res,303,'','text/plain; charset=utf-8',{Location:next});return send(res,200,signInPage(next),'text/html; charset=utf-8',{'Content-Security-Policy':"default-src 'self'; style-src 'self'; script-src 'self'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'"});}
  if(path==='/auth/login'&&req.method==='GET') {
    const requested=url.searchParams.get('next')||'/', next=pages.has(requested)?requested:'/';
@@ -297,4 +369,5 @@ server.on('upgrade',(req,socket,head)=>{
  upstream.on('response',response=>socket.end(`HTTP/1.1 ${response.statusCode||502} ${response.statusMessage||'Bad Gateway'}\r\nConnection: close\r\n\r\n`)); upstream.on('error',()=>socket.destroy()); upstream.end();
 });
 await startPreview();
+if(firecrawlWorkspaceDb)await initializeFirecrawlWorkspaceDb();
 server.listen(port,'0.0.0.0');
