@@ -177,16 +177,16 @@ services:
         aliases: [firecrawl-rabbitmq]
     healthcheck:
       test: ["CMD", "rabbitmq-diagnostics", "-q", "check_running"]
-      interval: 10s
-      timeout: 5s
+      interval: 15s
+      timeout: 30s
       retries: 5
-      start_period: 60s
+      start_period: 120s
     deploy:
       replicas: 1
       resources:
         limits:
-          cpus: "0.15"
-          memory: 512M
+          cpus: "0.5"
+          memory: 768M
       restart_policy:
         condition: on-failure
 
@@ -199,8 +199,6 @@ services:
       firecrawl-private:
         aliases: [firecrawl-playwright]
       firecrawl-egress: {}
-    security_opt:
-      - no-new-privileges:true
     cap_drop:
       - ALL
     tmpfs:
