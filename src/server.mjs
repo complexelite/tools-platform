@@ -18,6 +18,8 @@ const exchangeUrl = process.env.PERFEX_SSO_EXCHANGE_URL || 'https://clients.comp
 const secret = process.env.STUDIO_SSO_SECRET || '';
 const apiSecret = process.env.TOOLS_API_SECRET || '';
 const firecrawlWorkspaceDb = process.env.FIRECRAWL_WORKSPACE_DATABASE_URL ? new Pool({connectionString:process.env.FIRECRAWL_WORKSPACE_DATABASE_URL,max:4,connectionTimeoutMillis:5000,idleTimeoutMillis:30000,application_name:'complex-elite-firecrawl-workspace'}) : null;
+const firecrawlMonitorJobs = new Set();
+const firecrawlInternalOrigin = 'http://tools-firecrawl-api:3002';
 const cookieName = 'ce_tools_session';
 const stateName = 'ce_tools_state';
 const nextName = 'ce_tools_next';
@@ -86,6 +88,86 @@ async function initializeFirecrawlWorkspaceDb() {
   );
   CREATE INDEX IF NOT EXISTS firecrawl_saved_crawls_user_recent_idx ON firecrawl_saved_crawls(user_id, created_at DESC);
  `);
+}
+function isTerminalCrawlStatus(status) { return ['completed','failed','cancelled'].includes(String(status||'').toLowerCase()); }
+function normalizeCrawlPages(pages) {
+ const normalized=[];let bytes=0,truncated=false;
+ for(const page of Array.isArray(pages)?pages:[]) {
+  if(normalized.length>=1000){truncated=true;break;}
+  const item={url:String(page?.url||page?.metadata?.sourceURL||'').slice(0,2048),metadata:page?.metadata&&typeof page.metadata==='object'?page.metadata:{},markdown:String(page?.markdown||'').slice(0,2_000_000),links:Array.isArray(page?.links)?page.links.slice(0,2000):[]};
+  const itemBytes=Buffer.byteLength(JSON.stringify(item));
+  if(bytes+itemBytes>48*1024*1024){truncated=true;break;}
+  normalized.push(item);bytes+=itemBytes;
+ }
+ return {pages:normalized,truncated};
+}
+async function persistFirecrawlCrawl({userId,jobId,target,workflow='crawl',status='running',total=0,completed=0,pages=[]}) {
+ if(!firecrawlWorkspaceDb)return;
+ const normalized=normalizeCrawlPages(pages),safePages=normalized.pages,safeStatus=['running','queued','scraping','completed','failed','cancelled'].includes(String(status).toLowerCase())?String(status).toLowerCase():'running';
+ const count=(value,fallback)=>Math.max(0,Math.min(100000,Number(value)||fallback));
+ const normalizedWorkflow=['crawl','handover','audit'].includes(workflow)?workflow:'crawl';
+ const result={status:safeStatus,total:count(total,safePages.length),completed:count(completed,safePages.length),data:safePages,...(normalized.truncated?{truncated:true}:{})};
+ await firecrawlWorkspaceDb.query(`INSERT INTO firecrawl_saved_crawls(user_id,firecrawl_job_id,workflow,target,status,total,completed,page_count,result,created_at,updated_at)
+  VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9::jsonb,NOW(),NOW())
+  ON CONFLICT(user_id,firecrawl_job_id) DO UPDATE SET workflow=EXCLUDED.workflow,target=EXCLUDED.target,status=EXCLUDED.status,total=EXCLUDED.total,completed=EXCLUDED.completed,page_count=EXCLUDED.page_count,result=EXCLUDED.result,updated_at=NOW()`,
+ [userId,jobId,normalizedWorkflow,target,safeStatus,result.total,result.completed,safePages.length,JSON.stringify(result)]);
+}
+async function fetchFirecrawlJson(path) {
+ const response=await fetch(new URL(path,firecrawlInternalOrigin),{headers:{accept:'application/json'},signal:AbortSignal.timeout(30000)});
+ const body=await response.json().catch(()=>({}));
+ if(!response.ok)throw new Error(`Firecrawl status request returned ${response.status}`);
+ return body;
+}
+async function monitorFirecrawlCrawl(job) {
+ const key=`${job.userId}:${job.jobId}`;
+ if(firecrawlMonitorJobs.has(key)||!firecrawlWorkspaceDb)return;
+ firecrawlMonitorJobs.add(key);
+ const started=Date.now();let lastTotal=-1,lastCompleted=-1,lastErrorLog=0;
+ try {
+  while(Date.now()-started<24*60*60*1000) {
+   try {
+   const current=await fetchFirecrawlJson(`/v2/crawl/${encodeURIComponent(job.jobId)}`);
+   const status=String(current.status||'running').toLowerCase();
+   if(isTerminalCrawlStatus(status)) {
+    if(status==='completed') {
+     let page=current;const pages=[];let pageReads=0;const basePath=`/v2/crawl/${encodeURIComponent(job.jobId)}`;
+     while(page&&pageReads<200) {
+      if(Array.isArray(page.data))pages.push(...page.data);
+      pageReads++;
+      if(!page.next)break;
+      const next=new URL(page.next,firecrawlInternalOrigin);
+      // Firecrawl may return an absolute next URL for its own public API host. Only
+      // trust the crawl path and cursor; always fetch it through our private service.
+      if(next.pathname!==basePath)throw new Error('Firecrawl returned an invalid pagination cursor');
+      page=await fetchFirecrawlJson(`${next.pathname}${next.search}`);
+     }
+     if(page?.next)throw new Error('Firecrawl returned more than 200 result pages');
+     await persistFirecrawlCrawl({...job,status,total:current.total,completed:current.completed,pages});
+    } else await persistFirecrawlCrawl({...job,status,total:current.total,completed:current.completed,pages:[]});
+    return;
+   }
+   const total=Number(current.total)||0,completed=Number(current.completed)||0;
+   if(total!==lastTotal||completed!==lastCompleted) {
+    await persistFirecrawlCrawl({...job,status,total,completed,pages:current.data||[]});
+    lastTotal=total;lastCompleted=completed;
+   }
+   } catch(error) {
+    if(Date.now()-lastErrorLog>60000) {
+     console.error('[firecrawl-workspace] Crawl monitor will retry:',String(error?.message||'unknown error').slice(0,180));
+     lastErrorLog=Date.now();
+    }
+    await new Promise(resolve=>setTimeout(resolve,15000));
+    continue;
+   }
+   await new Promise(resolve=>setTimeout(resolve,5000));
+  }
+  console.error('[firecrawl-workspace] Crawl monitor reached its 24-hour limit.');
+ } finally {firecrawlMonitorJobs.delete(key);}
+}
+async function resumeFirecrawlMonitors() {
+ if(!firecrawlWorkspaceDb)return;
+ const pending=await firecrawlWorkspaceDb.query("SELECT user_id,firecrawl_job_id AS job_id,target,workflow FROM firecrawl_saved_crawls WHERE status NOT IN ('completed','failed','cancelled') ORDER BY created_at DESC LIMIT 100");
+ for(const row of pending.rows)void monitorFirecrawlCrawl({userId:row.user_id,jobId:row.job_id,target:row.target,workflow:row.workflow});
 }
 function firecrawlWorkspaceResponse(res,status,body) { return send(res,status,JSON.stringify(body),'application/json; charset=utf-8'); }
 function cookie(name,value,age) {return `${name}=${value}; Path=/; Max-Age=${age}; HttpOnly; Secure; SameSite=Lax`}
@@ -223,11 +305,47 @@ function proxyAiCaptions(req,res,upstreamPath) {
  const upstream=http.request({hostname:'caption-frontend',port:3000,path:upstreamPath,method:req.method,headers:{...req.headers,host:'caption-frontend:3000','x-forwarded-host':req.headers.host||'tools.complexelite.com','x-forwarded-proto':'https'}},response=>{res.writeHead(response.statusCode||502,response.statusMessage,response.headers);response.pipe(res);});
  upstream.on('error',()=>{if(!res.headersSent)send(res,502,'AI Video Captions is starting or unavailable. Retry shortly.');else res.destroy();});req.pipe(upstream);
 }
-function proxyFirecrawl(req,res,upstreamPath) {
+async function proxyFirecrawl(req,res,upstreamPath,context={}) {
+ const isCrawlStart=req.method==='POST'&&upstreamPath==='/v2/crawl'&&Number(context.userId)>0&&firecrawlWorkspaceDb;
+ let crawlRequestBody=null, crawlTarget='', crawlWorkflow='crawl';
+ if(isCrawlStart) {
+  try {
+   crawlRequestBody=await readJsonBody(req,1024*1024);
+   let parsed;try{parsed=new URL(String(crawlRequestBody.url||''));}catch{}
+   if(!parsed||!['http:','https:'].includes(parsed.protocol))return send(res,400,JSON.stringify({success:false,error:'A valid HTTP(S) URL is required to save this crawl.'}),'application/json');
+   crawlTarget=parsed.toString();
+   const requestedWorkflow=String(req.headers['x-ce-crawl-workflow']||'crawl');
+   crawlWorkflow=['crawl','handover','audit'].includes(requestedWorkflow)?requestedWorkflow:'crawl';
+  } catch(error) {return send(res,error.statusCode||400,JSON.stringify({success:false,error:error.message||'Invalid crawl request.'}),'application/json');}
+ }
  const headers={...req.headers,host:'tools-firecrawl-api:3002','x-forwarded-host':req.headers.host||'tools.complexelite.com','x-forwarded-proto':'https','x-forwarded-prefix':'/firecrawl'};
+ delete headers['x-ce-crawl-workflow'];
+ if(isCrawlStart){delete headers['transfer-encoding'];delete headers['accept-encoding'];headers['content-type']='application/json';headers['content-length']=Buffer.byteLength(JSON.stringify(crawlRequestBody));}
  delete headers.cookie;
- const upstream=http.request({hostname:'tools-firecrawl-api',port:3002,path:upstreamPath,method:req.method,headers},response=>{res.writeHead(response.statusCode||502,response.statusMessage,response.headers);response.pipe(res);});
- upstream.on('error',()=>{if(!res.headersSent)send(res,502,'Firecrawl is starting or unavailable. Retry shortly.');else res.destroy();});req.pipe(upstream);
+ const upstream=http.request({hostname:'tools-firecrawl-api',port:3002,path:upstreamPath,method:req.method,headers},response=>{
+  if(!isCrawlStart){res.writeHead(response.statusCode||502,response.statusMessage,response.headers);response.pipe(res);return;}
+  const chunks=[];let size=0;
+  response.on('data',chunk=>{size+=chunk.length;if(size<=2*1024*1024)chunks.push(chunk);});
+  response.on('end',async()=>{
+   const body=Buffer.concat(chunks), responseHeaders={...response.headers};let data={};
+   if(size<=2*1024*1024){try{data=JSON.parse(body.toString('utf8'));}catch{}}
+   const jobId=String(data.id||'').trim(), jobStatus=String(data.status||'running').toLowerCase();
+   if((response.statusCode||500)<300&&jobId&&jobId.length<=120) {
+    const job={userId:Number(context.userId),jobId,target:crawlTarget,workflow:crawlWorkflow};
+    try {
+     await persistFirecrawlCrawl({...job,status:jobStatus,total:data.total,completed:data.completed,pages:data.status==='completed'?data.data:[]});
+     responseHeaders['x-ce-crawl-storage']='saved';
+    } catch(error) {
+     responseHeaders['x-ce-crawl-storage']='retry-needed';
+     console.error('[firecrawl-workspace] Could not save crawl at acceptance:',String(error?.message||'unknown error').slice(0,180));
+    }
+    void monitorFirecrawlCrawl(job);
+   }
+   delete responseHeaders['content-length'];res.writeHead(response.statusCode||502,response.statusMessage,responseHeaders);res.end(body);
+  });
+ });
+ upstream.on('error',()=>{if(!res.headersSent)send(res,502,'Firecrawl is starting or unavailable. Retry shortly.');else res.destroy();});
+ if(isCrawlStart)upstream.end(JSON.stringify(crawlRequestBody));else req.pipe(upstream);
 }
 function authenticatedApi(req) {
  if(!apiSecret) return false;
@@ -244,7 +362,7 @@ async function handle(req,res) {
   if(!firecrawlWorkspaceDb)return firecrawlWorkspaceResponse(res,503,{error:'Firecrawl result storage is not configured.'});
   try {
    if(req.method==='GET'&&path==='/api/firecrawl/crawls') {
-    const rows=await firecrawlWorkspaceDb.query('SELECT id,firecrawl_job_id AS job_id,workflow,target,status,total,completed,page_count,created_at FROM firecrawl_saved_crawls WHERE user_id=$1 ORDER BY created_at DESC LIMIT 50',[s.user.id]);
+    const rows=await firecrawlWorkspaceDb.query("SELECT id,firecrawl_job_id AS job_id,workflow,target,status,total,completed,page_count,COALESCE((result->>'truncated')::boolean,FALSE) AS truncated,created_at FROM firecrawl_saved_crawls WHERE user_id=$1 ORDER BY created_at DESC LIMIT 50",[s.user.id]);
     return firecrawlWorkspaceResponse(res,200,{crawls:rows.rows});
    }
    const detail=path.match(/^\/api\/firecrawl\/crawls\/(\d+)$/);
@@ -259,14 +377,9 @@ async function handle(req,res) {
    let parsedTarget;try{parsedTarget=new URL(target);}catch{}
    if(!jobId||jobId.length>120||!parsedTarget||!['http:','https:'].includes(parsedTarget.protocol))return firecrawlWorkspaceResponse(res,400,{error:'A Firecrawl job ID and valid HTTP(S) target are required.'});
    if(!['crawl','handover','audit'].includes(workflow))return firecrawlWorkspaceResponse(res,400,{error:'Unsupported crawl workflow.'});
-   const pages=Array.isArray(body.pages)?body.pages.slice(0,1000).map((page)=>({
-    url:String(page?.url||page?.metadata?.sourceURL||'').slice(0,2048),
-    metadata:page?.metadata&&typeof page.metadata==='object'?page.metadata:{},
-    markdown:String(page?.markdown||'').slice(0,2_000_000),
-    links:Array.isArray(page?.links)?page.links.slice(0,2000):[],
-   })):[];
+   const normalizedPages=normalizeCrawlPages(body.pages),pages=normalizedPages.pages;
    const total=Math.max(0,Math.min(100000,Number(body.total)||pages.length)),completed=Math.max(0,Math.min(100000,Number(body.completed)||pages.length));
-   const result={status:'completed',total,completed,data:pages};
+   const result={status:'completed',total,completed,data:pages,...(normalizedPages.truncated?{truncated:true}:{})};
    const saved=await firecrawlWorkspaceDb.query(`INSERT INTO firecrawl_saved_crawls(user_id,firecrawl_job_id,workflow,target,status,total,completed,page_count,result,created_at,updated_at)
     VALUES($1,$2,$3,$4,'completed',$5,$6,$7,$8::jsonb,NOW(),NOW())
     ON CONFLICT(user_id,firecrawl_job_id) DO UPDATE SET workflow=EXCLUDED.workflow,target=EXCLUDED.target,status=EXCLUDED.status,total=EXCLUDED.total,completed=EXCLUDED.completed,page_count=EXCLUDED.page_count,result=EXCLUDED.result,updated_at=NOW()
@@ -313,7 +426,8 @@ async function handle(req,res) {
      catch {req.resume();return send(res,403,JSON.stringify({success:false,error:'Invalid request origin.'}),'application/json');}
    }
    const upstreamPath=path.slice('/firecrawl'.length)||'/';
-   return proxyFirecrawl(req,res,upstreamPath+url.search);
+   const crawlWorkflow=String(req.headers['x-ce-crawl-workflow']||'crawl');
+   return proxyFirecrawl(req,res,upstreamPath+url.search,{userId:session(req)?.user.id,workflow:crawlWorkflow});
  }
  if(path==='/ai-video-captions'||path.startsWith('/ai-video-captions/')) {
    if(!session(req)) {req.resume();return send(res,302,'','text/plain; charset=utf-8',{Location:`/login?next=${encodeURIComponent('/ai-video-captions')}`});}
@@ -369,5 +483,5 @@ server.on('upgrade',(req,socket,head)=>{
  upstream.on('response',response=>socket.end(`HTTP/1.1 ${response.statusCode||502} ${response.statusMessage||'Bad Gateway'}\r\nConnection: close\r\n\r\n`)); upstream.on('error',()=>socket.destroy()); upstream.end();
 });
 await startPreview();
-if(firecrawlWorkspaceDb)await initializeFirecrawlWorkspaceDb();
+if(firecrawlWorkspaceDb){await initializeFirecrawlWorkspaceDb();await resumeFirecrawlMonitors();}
 server.listen(port,'0.0.0.0');

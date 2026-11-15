@@ -87,6 +87,14 @@ function App() {
     try { return JSON.parse(localStorage.getItem(historyKey) || '[]'); } catch { return []; }
   });
 
+  async function refreshSavedCrawls(shouldUpdate = () => true) {
+    const response = await fetch('/api/firecrawl/crawls', { credentials: 'same-origin' });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(data.error || 'Storage is unavailable.');
+    if (shouldUpdate()) { setSavedCrawls(data.crawls || []); setStorageStatus('connected'); }
+    return data.crawls || [];
+  }
+
   useEffect(() => { setLimit(activeWorkflow === 'audit' ? '25' : activeWorkflow === 'handover' ? '50' : mode === 'search' ? '10' : mode === 'map' ? '100' : '50'); }, [mode, activeWorkflow]);
 
   const selectedMode = modes.find((item) => item.id === mode);
@@ -113,15 +121,17 @@ function App() {
 
   useEffect(() => {
     let alive = true;
-    fetch('/api/firecrawl/crawls', { credentials: 'same-origin' })
-      .then(async (response) => {
-        const data = await response.json().catch(() => ({}));
-        if (!response.ok) throw new Error(data.error || 'Storage is unavailable.');
-        if (alive) { setSavedCrawls(data.crawls || []); setStorageStatus('connected'); }
-      })
+    refreshSavedCrawls(() => alive)
       .catch(() => { if (alive) setStorageStatus('unavailable'); });
     return () => { alive = false; };
   }, []);
+
+  useEffect(() => {
+    const hasPending = savedCrawls.some((item) => !['completed', 'failed', 'cancelled'].includes(item.status));
+    if (!hasPending) return undefined;
+    const timer = window.setInterval(() => refreshSavedCrawls().catch(() => {}), 5000);
+    return () => window.clearInterval(timer);
+  }, [savedCrawls.some((item) => !['completed', 'failed', 'cancelled'].includes(item.status))]);
 
   useEffect(() => {
     if (!job?.id || ['completed', 'failed', 'cancelled'].includes(job.status)) return undefined;
@@ -140,7 +150,11 @@ function App() {
               try {
                 await saveCrawl(complete, url, activeWorkflow || 'crawl');
                 setStatus({ busy: false, message: `${complete.data.length} crawl result${complete.data.length === 1 ? '' : 's'} loaded and saved` });
-              } catch (saveError) { setStatus({ busy: false, message: `${complete.data.length} results loaded, but could not save crawl history: ${saveError.message}` }); }
+              } catch (saveError) {
+                const saved = await refreshSavedCrawls().catch(() => []);
+                const serverSaved = saved.find((item) => item.job_id === complete.id && item.status === 'completed');
+                setStatus({ busy: false, message: serverSaved ? `${complete.data.length} crawl results loaded and saved automatically` : `${complete.data.length} results loaded, but crawl history could not be saved: ${saveError.message}` });
+              }
             } catch (error) {
               setResult(data); setStatus({ busy: false, message: `Crawl completed, but some result pages could not be loaded: ${error.message}` });
             }
@@ -159,9 +173,9 @@ function App() {
     setHistory(next); localStorage.setItem(historyKey, JSON.stringify(next));
   }
 
-  async function request(path, body, method = 'POST') {
+  async function request(path, body, method = 'POST', extraHeaders = {}) {
     const response = await fetch(`${apiBase}${path}`, {
-      method, credentials: 'same-origin', headers: { 'Content-Type': 'application/json' },
+      method, credentials: 'same-origin', headers: { 'Content-Type': 'application/json', ...extraHeaders },
       ...(body ? { body: JSON.stringify(body) } : {}),
     });
     const data = await response.json().catch(() => ({}));
@@ -200,7 +214,7 @@ function App() {
       const data = await response.json().catch(() => ({}));
       if (!response.ok) throw new Error(data.error || 'Could not open saved crawl.');
       const item = data.crawl;
-      setUrl(item.target); setMode('crawl'); setActiveWorkflow(item.workflow === 'crawl' ? '' : item.workflow); setJob({ id: item.job_id, status: item.status, total: item.total, completed: item.completed }); setResult(item.result); setResultFilter(''); setStatus({ busy: false, message: `${item.page_count} saved results loaded from the database` });
+      setUrl(item.target); setMode('crawl'); setActiveWorkflow(item.workflow === 'crawl' ? '' : item.workflow); setJob({ id: item.job_id, status: item.status, total: item.total, completed: item.completed }); setResult(item.result); setResultFilter(''); setStatus({ busy: false, message: item.result?.truncated ? `${item.page_count} saved pages loaded; the workspace storage limit capped this result` : `${item.page_count} saved results loaded from the database` });
     } catch (error) { setStatus({ busy: false, message: error.message }); }
   }
 
@@ -232,7 +246,8 @@ function App() {
           const isAudit = activeWorkflow === 'audit';
           const isHandover = activeWorkflow === 'handover';
           const pathList = (value) => value.split(/\r?\n/).map((item) => item.trim()).filter(Boolean);
-          data = await request('/v2/crawl', { url: normalized, limit: Math.min(1000, Math.max(1, Number(limit) || 50)), maxDiscoveryDepth: Math.min(10, Math.max(1, Number(maxDepth) || 2)), sitemap: isAudit || isHandover ? sitemap : 'include', ...(includePaths.trim() ? { includePaths: pathList(includePaths) } : {}), ...(excludePaths.trim() ? { excludePaths: pathList(excludePaths) } : {}), maxConcurrency: 1, scrapeOptions: { formats: isAudit ? ['markdown', 'rawHtml', 'links'] : ['markdown', 'links'], onlyMainContent: isHandover ? false : onlyMain } });
+          data = await request('/v2/crawl', { url: normalized, limit: Math.min(1000, Math.max(1, Number(limit) || 50)), maxDiscoveryDepth: Math.min(10, Math.max(1, Number(maxDepth) || 2)), sitemap: isAudit || isHandover ? sitemap : 'include', ...(includePaths.trim() ? { includePaths: pathList(includePaths) } : {}), ...(excludePaths.trim() ? { excludePaths: pathList(excludePaths) } : {}), maxConcurrency: 1, scrapeOptions: { formats: isAudit ? ['markdown', 'rawHtml', 'links'] : ['markdown', 'links'], onlyMainContent: isHandover ? false : onlyMain } }, 'POST', { 'X-CE-Crawl-Workflow': activeWorkflow || 'crawl' });
+          await refreshSavedCrawls().catch(() => {});
           addHistory(isAudit ? 'Website audit' : isHandover ? 'Client handover' : 'Crawl', normalized);
           setJob(data);
           if (data.id && !['completed', 'failed', 'cancelled'].includes(data.status)) {
@@ -243,7 +258,11 @@ function App() {
             const complete = await collectCrawlPages(data);
             setJob(complete); setResult(complete);
             try { await saveCrawl(complete, normalized, activeWorkflow || 'crawl'); setStatus({ busy: false, message: `${complete.data.length} crawl result${complete.data.length === 1 ? '' : 's'} loaded and saved` }); }
-            catch (saveError) { setStatus({ busy: false, message: `${complete.data.length} results loaded, but could not save crawl history: ${saveError.message}` }); }
+            catch (saveError) {
+              const saved = await refreshSavedCrawls().catch(() => []);
+              const serverSaved = saved.find((item) => item.job_id === complete.id && item.status === 'completed');
+              setStatus({ busy: false, message: serverSaved ? `${complete.data.length} crawl results loaded and saved automatically` : `${complete.data.length} results loaded, but crawl history could not be saved: ${saveError.message}` });
+            }
             return;
           }
         }
@@ -295,7 +314,7 @@ function App() {
             <div className="form-bottom"><p><span className="lock">◈</span> Requests stay inside your signed-in Tools session.</p><button className="run-button" disabled={status.busy}>{status.busy ? <><span className="spinner"></span> Working</> : <>{mode === 'scrape' ? 'Scrape page' : mode === 'search' ? 'Search the web' : mode === 'crawl' ? 'Start crawl' : 'Map website'} <span>→</span></>}</button></div>
             {status.message && <div className={`notice ${status.busy ? 'busy' : ''}`} role="status" aria-live="polite"><span className={status.busy ? 'spinner' : 'notice-dot'}></span>{status.message}{crawlActive && <button type="button" onClick={cancelCrawl}>Cancel crawl</button>}</div>}
           </form>
-          <div className="saved-crawls"><div className="recent-title">SAVED CRAWLS <span className={storageStatus}>{storageStatus === 'connected' ? 'Dokploy database connected' : storageStatus === 'checking' ? 'Connecting…' : 'Database unavailable'}</span></div>{savedCrawls.length === 0 ? <p className="saved-empty">{storageStatus === 'connected' ? 'Completed crawls will be saved here for this Perfex user.' : storageStatus === 'unavailable' ? 'Crawl history could not connect to storage.' : 'Loading saved crawl history…'}</p> : savedCrawls.slice(0,8).map((item) => <button key={item.id} className="recent-item saved-crawl-item" onClick={() => openSavedCrawl(item.id)}><span className="recent-icon">↺</span><span><b>{item.workflow === 'handover' ? 'Client handover' : item.workflow === 'audit' ? 'Website audit' : 'Crawl'} · {item.page_count} pages</b><small>{item.target}</small></span><span className="recent-time">{new Date(item.created_at).toLocaleDateString()}</span></button>)}</div>
+          <div className="saved-crawls"><div className="recent-title">SAVED CRAWLS <span className={storageStatus}>{storageStatus === 'connected' ? 'Dokploy database connected' : storageStatus === 'checking' ? 'Connecting…' : 'Database unavailable'}</span></div>{savedCrawls.length === 0 ? <p className="saved-empty">{storageStatus === 'connected' ? 'Your crawl appears here as soon as Firecrawl accepts it.' : storageStatus === 'unavailable' ? 'Crawl history could not connect to storage.' : 'Loading saved crawl history…'}</p> : savedCrawls.slice(0,8).map((item) => <button key={item.id} className="recent-item saved-crawl-item" onClick={() => openSavedCrawl(item.id)}><span className="recent-icon">↺</span><span><b>{item.workflow === 'handover' ? 'Client handover' : item.workflow === 'audit' ? 'Website audit' : 'Crawl'} · {item.status === 'completed' ? `${item.page_count} pages${item.truncated ? ' · capped' : ''}` : item.status}</b><small>{item.target}</small></span><span className="recent-time">{new Date(item.created_at).toLocaleDateString()}</span></button>)}</div>
           {history.length > 0 && <div className="recent"><div className="recent-title">RECENT REQUESTS <span>Stored in this browser only</span></div>{history.slice(0,4).map((item) => <button key={item.id} className="recent-item" onClick={() => { if(item.kind==='Search') {setActiveWorkflow('');setMode('search');setQuery(item.target);} else {setActiveWorkflow('');setMode(item.kind.toLowerCase());setUrl(item.target);} }}><span className="recent-icon">↺</span><span><b>{item.kind}</b><small>{item.target}</small></span><span className="recent-time">{new Date(item.at).toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'})}</span></button>)}</div>}
         </section>
         <section className="results-panel">
