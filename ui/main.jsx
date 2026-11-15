@@ -118,8 +118,18 @@ function App() {
         if (!response.ok) throw new Error(data.error || 'Could not read crawl status.');
         setJob(data);
         if (['completed', 'failed', 'cancelled'].includes(data.status)) {
-          setResult(data);
-          setStatus({ busy: false, message: data.status === 'completed' ? 'Crawl complete' : `Crawl ${data.status}` });
+          if (data.status === 'completed') {
+            setStatus({ busy: true, message: 'Crawl complete · loading all result pages…' });
+            try {
+              const complete = await collectCrawlPages(data);
+              setJob(complete); setResult(complete);
+              setStatus({ busy: false, message: `${complete.data.length} crawl result${complete.data.length === 1 ? '' : 's'} loaded` });
+            } catch (error) {
+              setResult(data); setStatus({ busy: false, message: `Crawl completed, but some result pages could not be loaded: ${error.message}` });
+            }
+          } else {
+            setResult(data); setStatus({ busy: false, message: `Crawl ${data.status}` });
+          }
         }
       } catch (error) { setStatus({ busy: true, message: error.message }); }
     }, 3000);
@@ -140,6 +150,21 @@ function App() {
     const data = await response.json().catch(() => ({}));
     if (!response.ok || data.success === false) throw new Error(data.error || data.message || `Firecrawl returned ${response.status}.`);
     return data;
+  }
+
+  async function collectCrawlPages(initial) {
+    let page = initial;
+    const collected = [];
+    let pagesRead = 0;
+    while (page && pagesRead < 200) {
+      if (Array.isArray(page.data)) collected.push(...page.data);
+      pagesRead += 1;
+      if (!page.next) return { ...page, data: collected, next: null };
+      const nextUrl = new URL(page.next, window.location.origin);
+      if (!/^\/v2\/crawl\/[a-f\d-]+$/i.test(nextUrl.pathname)) throw new Error('Firecrawl returned an invalid crawl results cursor.');
+      page = await request(`${nextUrl.pathname}${nextUrl.search}`);
+    }
+    return { ...page, data: collected, next: page?.next || null };
   }
 
   async function run(event) {
